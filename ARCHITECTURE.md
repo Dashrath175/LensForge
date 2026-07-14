@@ -1,0 +1,119 @@
+# LensForge — Architecture
+
+System structure, module boundaries, pipelines, and binding design decisions (`D#`). Physics content: PHYSICS.md. Milestones: IMPLEMENTATION.md.
+
+## 1. High-Level Architecture
+
+```
+ ┌────────┐   writes    ┌────────────────┐   dirty flags   ┌───────────────┐
+ │   UI   │ ──────────▶ │ ParameterStore │ ──────────────▶ │ Frame Graph   │
+ └────────┘             │  (src/sim)     │                 │ (src/renderer)│
+ ┌────────┐   writes    │  single source │   uniforms      │  A→B*→C→D     │
+ │ Camera │ ──────────▶ │  of truth      │ ──────────────▶ │  chunk sched. │
+ │ (scene)│             └────────────────┘                 └──────┬────────┘
+ └────────┘                                                       │ dispatch
+ ┌──────────────────┐        validates                     ┌──────▼────────┐
+ │ src/physics f64  │ ◀──────────────────────────────────▶ │ src/gpu + WGSL│
+ │ oracle + tests   │     src/validation harness           │ kernels (f32) │
+ └──────────────────┘                                      └───────────────┘
+```
+
+Two independent implementations of the same physics formulation: a float64 CPU oracle (`src/physics/`) and float32 WGSL kernels (`src/shaders/`). `src/validation/` proves they agree (VALIDATION.md §V-O). All real-time work happens on the GPU; the CPU handles parameters, camera, and precomputation only.
+
+## 2. Module Responsibilities
+
+| Module | Responsibility | Must not |
+|---|---|---|
+| `src/core/` | Vec/mat/quaternion math, constants, unit conversion (geometrized ↔ SI), shared buffer-layout definitions | Depend on any other module |
+| `src/physics/` | Float64 reference: Kerr metric, Hamiltonian RHS, DP45 integrator, tetrads, circular orbits, Novikov–Thorne flux, redshift factor | Touch GPU, DOM, or rendering |
+| `src/shaders/` | WGSL kernel sources, mirroring `src/physics/` one-to-one where applicable | Contain physics absent from `src/physics/` |
+| `src/gpu/` | Device acquisition, capability tiering, pipeline/bind-group builders, buffer lifecycle, WGSL preprocessor glue, timestamp profiler | Know about physics or frame structure |
+| `src/renderer/` | Frame graph (passes A–D), chunk scheduler, render targets, accumulation, tiled export | Compute physics beyond buffer layouts from `core` |
+| `src/scene/` | Camera controller, observer tetrad selection, preset serialization (JSON schema) | Own simulation time |
+| `src/sim/` | Simulation clock (time scaling), ParameterStore with dirty-flag diffing | Render or own the camera |
+| `src/ui/` | Tweakpane bindings → ParameterStore only | Touch GPU or renderer directly |
+| `src/validation/` | GPU-vs-oracle harness, golden data, drift reports | Ship in production bundle |
+| `src/app/` | Bootstrap, capability page, wiring | Contain logic beyond composition |
+| `tools/` | Offline Node scripts: sky-map build, NT flux LUT, Planck→XYZ LUT, bright-star catalog extraction | Run in the browser |
+
+## 3. Folder Structure
+
+```
+lensforge/
+├─ src/
+│  ├─ core/          ├─ physics/       ├─ shaders/
+│  │                 │                 │   ├─ common/   (math, RNG jitter)
+│  │                 │                 │   ├─ metric/   ├─ integrator/
+│  │                 │                 │   ├─ disk/     ├─ sky/  └─ post/
+│  ├─ gpu/           ├─ renderer/      ├─ scene/
+│  ├─ sim/           ├─ ui/            ├─ validation/   └─ app/
+├─ assets/           (KTX2 sky maps, LUTs, star catalog extract)
+├─ tools/            (offline precompute scripts)
+├─ tests/
+│  ├─ unit/          (Vitest, runs src/physics in CI)
+│  └─ golden/        (Playwright image regression)
+├─ docs/             (generated comparison figures only — prose lives in root .md files)
+└─ .github/workflows/ci.yml
+```
+
+## 4. Rendering Pipeline
+
+```
+Pass A  RAY INIT (compute)      pixel → tetrad direction → (x^μ, p_μ) written to
+                                RayState storage buffer (SoA layout)
+Pass B  GEODESIC MARCH          ≤ K RK45 steps per dispatch per ray; loops until all
+        (compute, CHUNKED)      rays leave MARCHING. Statuses: MARCHING | CAPTURED |
+                                ESCAPED | HIT_DISK(r, φ, g). H-drift monitor per step.
+Pass C  SHADE (compute)         ESCAPED   → sky cubemap + analytic star splats × |det J|⁻¹
+                                HIT_DISK  → Planck(T_eff(r)) × g³ → CIE XYZ → linear sRGB
+                                CAPTURED  → 0
+                                accumulates into HDR target (rgba16f; rgba32f for export)
+Pass D  POST (compute/render)   temporal accumulation → optional physical bloom (off by
+                                default) → exposure → AgX tone map → present / PNG export
+```
+
+## 5. GPU Pipeline
+
+- **Persistent ray state** in storage buffers, SoA. Rays are a checkpointable process, never "one dispatch = one frame" (D6).
+- **Chunk scheduler** (renderer): dispatches Pass B with a per-dispatch step budget `K` sized by measured pass timings; requeues while any ray is MARCHING. The same scheduler drives interactive frames, progressive refinement, and tiled 8K export — one code path.
+- **Specialization constants** for quality tier and `K`; WGSL assembled at build time by a Vite preprocessor plugin (WGSL has no `#include`).
+- **Timestamp queries** wrap every pass; feeds the in-app profiler HUD (DEVELOPMENT.md §Profiling).
+- Optional prefix-sum ray compaction, added only if profiling shows divergence-tail cost > ~20% (see §8, D8).
+
+## 6. Data Flow
+
+Per frame: UI/camera mutate ParameterStore → diff decides **restart accumulation** (physics parameter changed) vs **continue** (camera at rest; or only time advanced with axisymmetric disk) → single uniform buffer packed (`a`, `Ṁ`, camera pose/tetrad, FOV, `t_sim`, tolerances, `K`) → passes A–D. GPU→CPU readbacks: profiling queries and PNG export only.
+
+**Simulation loop** and **render loop** are decoupled: the sim loop (per rAF) advances `t_sim += dt_real × timeScale` and camera orbit — microseconds of CPU work, no CPU physics stepping. The render loop asks whether the accumulation target matches current uniforms and either refines or restarts. This is what makes still-frame quality unbounded while interaction stays fluid.
+
+## 7. Dependency Graph
+
+```
+core ◀── physics ◀── validation, tools, tests/unit
+core ◀── gpu ◀── renderer ◀── app
+sim, scene ◀── app          ui ──▶ sim (only)
+shaders: no build-time deps except the preprocessor
+```
+
+Enforced acyclic. Runtime dependency: Tweakpane. Dev dependencies: Vite, Vitest, Playwright, TypeScript.
+
+## 8. Design Decisions
+
+| ID | Decision | Rationale (condensed) |
+|---|---|---|
+| D1 | WebGPU only, no WebGL2 fallback | Compute shaders, storage buffers, timestamp queries are load-bearing; a fragment-shader fallback is a permanent tax. Capability page instead. |
+| D2 | No engine (no Three.js) | No meshes, no scene graph — one compute integrator + post chain. An engine is an abstraction to work around. |
+| D3 | Hamiltonian geodesics (8 ODEs), not Christoffel or Carter-separated forms | Needs only inverse metric + gradient; no turning-point sign tracking (classic GPU branch bug source); ~2–3× less arithmetic than second-order form. PHYSICS.md §4. |
+| D4 | Boyer–Lindquist coordinates | Rays terminate at `r₊(1+ε)` — the BL coordinate singularity is unreachable. Direct comparability with published validation data [R1][R2][R5][R6]. Kerr–Schild is documented fallback if near-horizon step collapse bites. |
+| D5 | Kernel units `G = c = M = 1` | Centers arithmetic in float32's precision sweet spot; mass enters only via UI-side unit conversion. PHYSICS.md §1. |
+| D6 | Chunked, checkpointable ray march | Windows TDR (~2 s watchdog) resets the device on long dispatches. Also yields progressive refinement and tiled export for free. |
+| D7 | No WASM/Rust in core | Physics hot loop is on the GPU; CPU load is trivial. The float64 oracle in TypeScript suffices for validation. |
+| D8 | Ray retirement over eager compaction | Early-terminating rays stop consuming work via status masks; prefix-sum compaction only if profiling justifies it. |
+| D9 | Hybrid sky: HDR cubemap + analytic bright-star splats scaled by `|det J|⁻¹` | Surface brightness conservation makes cubemap lookup automatically correct; point sources need explicit magnification — texture resolution can never fix star aliasing under strong distortion. |
+| D10 | HDR mandatory, AgX tone map | Beaming produces 10³–10⁴ radiance ratios; AgX over ACES for hue behavior under extreme ratios. |
+| D11 | Single quality knob = integrator tolerance | All quality/perf trade-offs route through one parameter plus dynamic resolution; no scattered magic constants. |
+| D12 | Image tests are tolerance-based, never pixel-exact | WGSL FMA contraction differs across drivers; exact match is impossible by design. Exact tests live in the CPU oracle suite. |
+
+## 9. Future Scalability
+
+The architecture anticipates (without implementing) the expansions in this order of value/effort: volumetric disk as an emissive ray-marched volume fed by imported GRMHD snapshots (slots into Pass B as an alternative medium model); free-fall camera on timelike geodesics (same integrator, `H = −½`); df64 double-float offline mode for n ≥ 2 photon subrings (integrator is formulation-agnostic over the scalar type); relativistic jets (additional emitter model in Pass C); spectral rendering replacing the Planck→XYZ LUT; WebGPU subgroups for integrator throughput. None of these require changing module boundaries — only adding implementations behind existing seams.

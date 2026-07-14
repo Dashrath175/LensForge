@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LensForge</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+      #canvas { display: block; width: 100vw; height: 100vh; }
+      #hud {
+        position: fixed; top: 8px; left: 8px; padding: 6px 10px;
+        font: 12px/1.5 ui-monospace, monospace; color: #9aa4ad;
+        background: rgba(0, 0, 0, 0.55); border-radius: 4px;
+        white-space: pre; pointer-events: none; user-select: none;
+      }
+      #fallback {
+        display: none; max-width: 46rem; margin: 18vh auto 0; padding: 0 2rem;
+        font: 15px/1.7 system-ui, sans-serif; color: #c8ced4;
+      }
+      #fallback h1 { font-weight: 600; color: #fff; }
+      #fallback a { color: #7ab8ff; }
+      #fallback code { color: #e8b46a; }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas"></canvas>
+    <div id="hud"></div>
+    <div id="fallback"></div>
+    <script type="module" src="/src/app/main.ts"></script>
+  </body>
+</html>
