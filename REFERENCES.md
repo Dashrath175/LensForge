@@ -37,6 +37,7 @@ Canonical citation keys `[R#]` used across all documentation. When adding an equ
 | R12 | Dormand, J. R., Prince, P. J. (1980). "A family of embedded Runge-Kutta formulae." *Journal of Computational and Applied Mathematics* 6(1), 19–26. | DP45 coefficients (PHYSICS.md §10) |
 | R15 | Thall, A. (2006). "Extended-precision floating-point numbers for GPU computation." SIGGRAPH '06 Research Posters. (Builds on Dekker, T. J. (1971), *Numerische Mathematik* 18, 224–242.) | df64 double-float technique — future offline mode (ARCHITECTURE.md §9) |
 | R17 | Wyszecki, G., Stiles, W. S. (1982). *Color Science: Concepts and Methods, Quantitative Data and Formulae*, 2nd ed. Wiley. | Planck spectrum → CIE 1931 XYZ pipeline (PHYSICS.md §8) |
+| R22 | Wyman, C., Sloan, P.-P., Shirley, P. (2013). "Simple Analytic Approximations to the CIE XYZ Color Matching Functions." *Journal of Computer Graphics Techniques* 2(2), 1–11. | Multi-lobe Gaussian CMF fits used by the Planck→XYZ LUT generator (`tools/`) |
 
 ## GPU / WebGPU / Rendering References
 

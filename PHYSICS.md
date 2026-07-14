@@ -84,7 +84,7 @@ Time-averaged, geometrically thin, optically thick, equatorial disk [R4]. Local 
 T_eff(r) = [ F(r) / σ_SB ]^{1/4}
 ```
 
-Sanity limit (`a = 0`, Newtonian regime): `F(r) → (3Ṁ/8πr³)(1 − √(r_isco/r))` [R21]. Local emission is blackbody `B_ν(T_eff)` (no limb darkening; §9).
+Sanity limit (`a = 0`, Newtonian regime): `F(r) → (3Ṁ/8πr³)(1 − C/√r)` with `C = √6 + (√3/2)ln((√6+√3)/(√6−√3)) ≈ 3.976`; the naive Shakura–Sunyaev constant `√6` [R21] is approached only to leading order (the zero-torque log terms shift the boundary constant — V-A6 verifies both statements). Local emission is blackbody `B_ν(T_eff)` (no limb darkening; §9).
 
 ## 8. Radiative Transfer, Redshift, Beaming
 

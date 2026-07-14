@@ -1,0 +1,9 @@
+{
+  "description": "Blackbody spectral radiance integrated against CIE 1931 XYZ CMFs (Wyman et al. fits [R22])",
+  "layout": "float32 [tIndex][X,Y,Z]",
+  "tCount": 512,
+  "log10T": "uniform in [2, 7]",
+  "units": "W m^-2 sr^-1",
+  "elements": 1536,
+  "sha256": "663bdaad66e7538596488e04d3121f8dcade252fc690bb0574166d50708b1d84"
+}
