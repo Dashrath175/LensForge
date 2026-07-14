@@ -69,14 +69,17 @@ export interface GeodesicResult {
   escapeDirection?: [number, number, number];
 }
 
-const DEFAULTS = {
+/** Shared termination geometry (PHYSICS.md §10); the GPU trace pass imports these. */
+export const GEODESIC_DEFAULTS = {
   rtol: 1e-12,
   atol: 1e-14,
   maxSteps: 1_000_000,
   rEscape: 1e4,
   horizonEpsilon: 1e-3,
   monitorTolerance: 1e-8,
-};
+} as const;
+
+const DEFAULTS = GEODESIC_DEFAULTS;
 
 const SAFETY = 0.9;
 const MIN_SCALE = 0.2;
@@ -107,48 +110,41 @@ function hermiteState(
   }
 }
 
-/** cosθ of the Hermite-interpolated state at σ (plane-crossing indicator function). */
-function hermiteCosTheta(
+/** Hermite interpolation of a single state component at σ. */
+function hermiteComponent(
   y0: Float64Array,
   f0: Float64Array,
   y1: Float64Array,
   f1: Float64Array,
   h: number,
   sigma: number,
+  index: number,
 ): number {
   const s2 = sigma * sigma;
   const s3 = s2 * sigma;
-  const th =
-    (2 * s3 - 3 * s2 + 1) * y0[ITH]! +
-    (s3 - 2 * s2 + sigma) * h * f0[ITH]! +
-    (-2 * s3 + 3 * s2) * y1[ITH]! +
-    (s3 - s2) * h * f1[ITH]!;
-  return Math.cos(th);
+  return (
+    (2 * s3 - 3 * s2 + 1) * y0[index]! +
+    (s3 - 2 * s2 + sigma) * h * f0[index]! +
+    (-2 * s3 + 3 * s2) * y1[index]! +
+    (s3 - s2) * h * f1[index]!
+  );
 }
 
 /**
- * Locate a cosθ sign change in [σLo, σHi] by bisection on the Hermite
- * interpolant. Returns the crossing σ, or -1 if the endpoint signs agree.
+ * Locate a sign change of `fn(σ)` in [σLo, σHi] by bisection. Returns the
+ * crossing σ, or -1 if the endpoint signs agree.
  */
-function bisectCrossing(
-  y0: Float64Array,
-  f0: Float64Array,
-  y1: Float64Array,
-  f1: Float64Array,
-  h: number,
-  sigmaLo: number,
-  sigmaHi: number,
-): number {
+function bisectSignChange(fn: (sigma: number) => number, sigmaLo: number, sigmaHi: number): number {
   let lo = sigmaLo;
   let hi = sigmaHi;
-  let cLo = hermiteCosTheta(y0, f0, y1, f1, h, lo);
-  const cHi = hermiteCosTheta(y0, f0, y1, f1, h, hi);
+  let cLo = fn(lo);
+  const cHi = fn(hi);
   if (cLo === 0) return lo;
   if (cHi === 0) return hi;
   if (Math.sign(cLo) === Math.sign(cHi)) return -1;
   for (let i = 0; i < 60; i++) {
     const mid = 0.5 * (lo + hi);
-    const cMid = hermiteCosTheta(y0, f0, y1, f1, h, mid);
+    const cMid = fn(mid);
     if (Math.sign(cMid) === Math.sign(cLo)) {
       lo = mid;
       cLo = cMid;
@@ -223,20 +219,25 @@ export function integrateGeodesic(
     maxDriftQ,
   });
 
+  // Escape direction evaluated from the momentum at the (interpolated) state.
+  const escapedResult = (state: Float64Array): GeodesicResult => {
+    const m = evalMetric(a, state[IR]!, state[ITH]!, metricScratch);
+    const res = result('ESCAPED', state);
+    res.escapeDirection = cartesianDirection(
+      a, state[IR]!, state[ITH]!, state[IPH]!,
+      m.grr * state[5]!, m.gthth * state[6]!, m.gtph * state[4]! + m.gphph * state[7]!,
+    );
+    return res;
+  };
+
   while (steps < maxSteps) {
     const r = y[IR]!;
 
     // --- termination checks on the current accepted state ---
     if (r <= rCapture) return result('CAPTURED', y);
-    if (r >= rEscape && k1[IR]! > 0) {
-      const m = evalMetric(a, r, y[ITH]!, metricScratch);
-      const res = result('ESCAPED', y);
-      res.escapeDirection = cartesianDirection(
-        a, r, y[ITH]!, y[IPH]!,
-        m.grr * y[5]!, m.gthth * y[6]!, m.gtph * y[4]! + m.gphph * y[7]!,
-      );
-      return res;
-    }
+    // Covers rays initialized at/beyond the escape radius moving outward; the
+    // normal path is the interpolated crossing below.
+    if (r >= rEscape && k1[IR]! > 0) return escapedResult(y);
 
     // --- step clamps (PHYSICS.md §10) ---
     let hMax = Infinity;
@@ -305,11 +306,13 @@ export function integrateGeodesic(
 
     // --- disk-plane crossing detection on the accepted step ---
     if (disk) {
+      const cosThetaAt = (sigma: number): number =>
+        Math.cos(hermiteComponent(y, k1, yTrial, k7, h, sigma, ITH));
       // Check both half-intervals so a double crossing within one step
       // (enter + exit the plane) cannot be missed.
       const brackets: Array<[number, number]> = [[0, 0.5], [0.5, 1]];
       for (const [lo, hi] of brackets) {
-        const sigma = bisectCrossing(y, k1, yTrial, k7, h, lo, hi);
+        const sigma = bisectSignChange(cosThetaAt, lo, hi);
         if (sigma < 0) continue;
         hermiteState(y, k1, yTrial, k7, h, sigma, yHit);
         const rHit = yHit[IR]!;
@@ -318,6 +321,23 @@ export function integrateGeodesic(
           steps++;
           return result('HIT_DISK', yHit);
         }
+      }
+    }
+
+    // --- escape-radius crossing: interpolate to exactly r = rEscape so the
+    // sky is sampled at a well-defined radius (and the f32 port compares
+    // against the oracle at the same radius, VALIDATION.md V-O1) ---
+    if (y[IR]! < rEscape && yTrial[IR]! >= rEscape) {
+      const sigma = bisectSignChange(
+        (s) => hermiteComponent(y, k1, yTrial, k7, h, s, IR) - rEscape,
+        0,
+        1,
+      );
+      if (sigma >= 0) {
+        hermiteState(y, k1, yTrial, k7, h, sigma, yHit);
+        lambda += sigma * h;
+        steps++;
+        return escapedResult(yHit);
       }
     }
 

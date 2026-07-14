@@ -4,6 +4,7 @@
  */
 import { acquireGpu, WebGpuUnavailableError } from '../gpu/device';
 import { Renderer } from '../renderer/renderer';
+import { OrbitCamera } from '../scene/orbitCamera';
 import { showCapabilityPage } from './capabilityPage';
 
 const canvas = document.getElementById('canvas') as HTMLCanvasElement;
@@ -38,13 +39,19 @@ async function start(): Promise<void> {
   const [w, h] = canvasPixelSize();
   canvas.width = w;
   canvas.height = h;
-  renderer = new Renderer(gpu, w, h);
+  const localRenderer = new Renderer(gpu, w, h);
+  renderer = localRenderer;
+
+  const camera = new OrbitCamera(() => localRenderer.setCamera(camera.pose));
+  camera.attach(canvas);
+  localRenderer.setCamera(camera.pose);
 
   new ResizeObserver(() => {
     const [rw, rh] = canvasPixelSize();
     canvas.width = rw;
     canvas.height = rh;
-    renderer?.resize(rw, rh);
+    localRenderer.resize(rw, rh);
+    localRenderer.setCamera(camera.pose); // aspect changed
   }).observe(canvas);
 
   let lastHudUpdate = 0;
@@ -52,7 +59,10 @@ async function start(): Promise<void> {
     if (!renderer) return;
     renderer.renderFrame();
     if (now - lastHudUpdate > 250) {
-      hud.textContent = `LensForge M0 — ${gpu.tier} tier\n${renderer.profiler.report()}`;
+      const marching = localRenderer.tracePass.getKnownMarching();
+      hud.textContent =
+        `LensForge M2 — ${gpu.tier} tier — r=${camera.pose.r.toFixed(1)}M` +
+        `${marching > 0 ? ` — resolving ${marching} rays` : ''}\n${renderer.profiler.report()}`;
       lastHudUpdate = now;
     }
     rafHandle = requestAnimationFrame(frame);
@@ -60,8 +70,8 @@ async function start(): Promise<void> {
   rafHandle = requestAnimationFrame(frame);
 
   if (import.meta.env.DEV) {
-    // Dev-only hooks: device-lost recovery drill and rAF-independent single-frame
-    // render (lets headless/hidden-tab validation drive the pipeline directly).
+    // Dev-only hooks: device-loss drill, rAF-independent rendering (hidden-tab
+    // validation), and the V-O GPU-vs-oracle harness (src/validation).
     (window as unknown as Record<string, unknown>).__lensforge = {
       simulateDeviceLoss: () => gpu.device.destroy(),
       forceRecover: () => {
@@ -69,15 +79,36 @@ async function start(): Promise<void> {
         renderer = null;
         void start();
       },
-      profilerReport: () => renderer?.profiler.report() ?? 'no renderer',
-      renderOnce: async (width: number, height: number) => {
-        if (!renderer) return 'no renderer';
-        canvas.width = width;
-        canvas.height = height;
-        renderer.resize(width, height);
-        renderer.renderFrame();
+      profilerReport: () => localRenderer.profiler.report(),
+      tracePass: localRenderer.tracePass,
+      resize: (w: number, h: number) => {
+        canvas.width = w;
+        canvas.height = h;
+        localRenderer.resize(w, h);
+        localRenderer.setCamera(camera.pose);
+      },
+      setCamera: (pose: Partial<import('../renderer/tracePass').CameraPose>) => camera.set(pose),
+      renderOnce: async () => {
+        localRenderer.renderFrame();
         await gpu.device.queue.onSubmittedWorkDone();
-        return `rendered ${width}x${height}`;
+      },
+      /** Render frames until the march converges; returns frames used. */
+      converge: async (maxFrames = 200) => {
+        for (let i = 0; i < maxFrames; i++) {
+          localRenderer.renderFrame();
+          await gpu.device.queue.onSubmittedWorkDone();
+          await new Promise((r) => setTimeout(r, 0)); // let counter mapAsync settle
+          if (localRenderer.tracePass.getKnownMarching() === 0) return i + 1;
+        }
+        return maxFrames;
+      },
+      runValidation: async () => {
+        const { runVOSuite } = await import('../validation/gpuOracleHarness');
+        return runVOSuite(localRenderer.tracePass);
+      },
+      measureShadow: async () => {
+        const { measureShadowDiameter } = await import('../validation/gpuOracleHarness');
+        return measureShadowDiameter(localRenderer, camera);
       },
     };
   }

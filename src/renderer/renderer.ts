@@ -1,44 +1,28 @@
 /**
- * M0 renderer skeleton (ARCHITECTURE.md §4): HDR storage target -> present.
- * The test-pattern compute pass stands where the trace/shade passes (A-C)
- * land in M2; the present pass is the permanent tail of Pass D.
+ * Frame orchestrator (ARCHITECTURE.md §4): owns the HDR target and Pass D
+ * (present), delegates Passes A-C to TracePass.
  */
 import type { GpuContext } from '../gpu/device';
 import { GpuProfiler } from '../gpu/profiler';
 import presentWgsl from '../shaders/post/present.wgsl';
-import hdrGradientWgsl from '../shaders/test/hdr-gradient.wgsl';
+import { TracePass, type CameraPose } from './tracePass';
 
 const HDR_FORMAT: GPUTextureFormat = 'rgba16float';
-const WORKGROUP_SIZE = 8;
 
 export class Renderer {
   private readonly gpu: GpuContext;
   readonly profiler: GpuProfiler;
+  readonly tracePass: TracePass;
 
-  private readonly patternPipeline: GPUComputePipeline;
   private readonly presentPipeline: GPURenderPipeline;
   private readonly presentUniforms: GPUBuffer;
-
   private hdrTexture: GPUTexture;
-  private hdrView: GPUTextureView;
-  private patternBindGroup!: GPUBindGroup;
   private presentBindGroup!: GPUBindGroup;
-  private hdrStale = true;
 
   constructor(gpu: GpuContext, width: number, height: number) {
     this.gpu = gpu;
     this.profiler = new GpuProfiler(gpu.device, gpu.hasTimestampQuery);
     const { device } = gpu;
-
-    this.patternPipeline = device.createComputePipeline({
-      label: 'test-pattern',
-      layout: 'auto',
-      compute: {
-        module: device.createShaderModule({ code: hdrGradientWgsl, label: 'hdr-gradient' }),
-        entryPoint: 'cs_pattern',
-        constants: { EV_RANGE: 8.0, WORKGROUP_SIZE },
-      },
-    });
 
     const presentModule = device.createShaderModule({ code: presentWgsl, label: 'present' });
     this.presentPipeline = device.createRenderPipeline({
@@ -52,7 +36,6 @@ export class Renderer {
       },
       primitive: { topology: 'triangle-list' },
     });
-
     this.presentUniforms = device.createBuffer({
       size: 16, // exposure f32, padded to uniform alignment
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -61,8 +44,9 @@ export class Renderer {
     this.setExposure(1.0);
 
     this.hdrTexture = this.createHdrTexture(width, height);
-    this.hdrView = this.hdrTexture.createView();
-    this.rebuildBindGroups();
+    const hdrView = this.hdrTexture.createView();
+    this.rebuildPresentBindGroup(hdrView);
+    this.tracePass = new TracePass(gpu, this.profiler, hdrView, width, height);
   }
 
   private createHdrTexture(width: number, height: number): GPUTexture {
@@ -74,16 +58,11 @@ export class Renderer {
     });
   }
 
-  private rebuildBindGroups(): void {
-    const { device } = this.gpu;
-    this.patternBindGroup = device.createBindGroup({
-      layout: this.patternPipeline.getBindGroupLayout(0),
-      entries: [{ binding: 0, resource: this.hdrView }],
-    });
-    this.presentBindGroup = device.createBindGroup({
+  private rebuildPresentBindGroup(hdrView: GPUTextureView): void {
+    this.presentBindGroup = this.gpu.device.createBindGroup({
       layout: this.presentPipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: this.hdrView },
+        { binding: 0, resource: hdrView },
         { binding: 1, resource: { buffer: this.presentUniforms } },
       ],
     });
@@ -93,35 +72,32 @@ export class Renderer {
     this.gpu.device.queue.writeBuffer(this.presentUniforms, 0, new Float32Array([exposure, 0, 0, 0]));
   }
 
+  setCamera(pose: CameraPose, spin = 0): void {
+    this.tracePass.setCamera(pose, spin);
+  }
+
+  dimensions(): { width: number; height: number } {
+    return { width: this.hdrTexture.width, height: this.hdrTexture.height };
+  }
+
+  onGpuIdle(): Promise<undefined> {
+    return this.gpu.device.queue.onSubmittedWorkDone();
+  }
+
   resize(width: number, height: number): void {
     if (this.hdrTexture.width === width && this.hdrTexture.height === height) return;
     this.hdrTexture.destroy();
     this.hdrTexture = this.createHdrTexture(width, height);
-    this.hdrView = this.hdrTexture.createView();
-    this.rebuildBindGroups();
-    this.hdrStale = true;
+    const hdrView = this.hdrTexture.createView();
+    this.rebuildPresentBindGroup(hdrView);
+    this.tracePass.resize(width, height, hdrView);
   }
 
   renderFrame(): void {
     const { device, context } = this.gpu;
     const encoder = device.createCommandEncoder({ label: 'frame' });
 
-    // The static pattern only needs recompute after (re)size — mirrors the
-    // accumulate-vs-restart contract of ARCHITECTURE.md §6.
-    if (this.hdrStale) {
-      const pass = encoder.beginComputePass({
-        label: 'test-pattern',
-        timestampWrites: this.profiler.timestampWrites('pattern') as GPUComputePassTimestampWrites,
-      });
-      pass.setPipeline(this.patternPipeline);
-      pass.setBindGroup(0, this.patternBindGroup);
-      pass.dispatchWorkgroups(
-        Math.ceil(this.hdrTexture.width / WORKGROUP_SIZE),
-        Math.ceil(this.hdrTexture.height / WORKGROUP_SIZE),
-      );
-      pass.end();
-      this.hdrStale = false;
-    }
+    this.tracePass.encode(encoder);
 
     const present = encoder.beginRenderPass({
       label: 'present',
@@ -142,10 +118,12 @@ export class Renderer {
 
     this.profiler.resolve(encoder);
     device.queue.submit([encoder.finish()]);
+    this.tracePass.afterSubmit();
     this.profiler.endFrame();
   }
 
   destroy(): void {
+    this.tracePass.destroy();
     this.hdrTexture.destroy();
     this.presentUniforms.destroy();
   }

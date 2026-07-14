@@ -119,7 +119,7 @@ Color: Planck spectrum → CIE 1931 XYZ (1-D LUT in `T`) → linear sRGB [R17]. 
 
 **Disk intersection:** detect sign change of `cos θ` across a step with `r ∈ [r_isco, r_out]`; refine by 3–4 bisection/Hermite iterations on dense output. Never rely on a step landing on the plane.
 
-**Termination:** `r < r₊(1 + ε)` (`ε ≈ 10⁻³`) → CAPTURED (redshift has already driven any contribution below one ULP of the framebuffer — this is why Boyer–Lindquist is safe, D4); `r > r_esc ≈ 10⁴` → ESCAPED with asymptotic direction; step budget exhausted → flagged and counted (VALIDATION.md V-O3).
+**Termination:** `r < r₊(1 + ε)` (`ε ≈ 10⁻³`) → CAPTURED (redshift has already driven any contribution below one ULP of the framebuffer — this is why Boyer–Lindquist is safe, D4); outward crossing of `r_esc ≈ 10⁴` → ESCAPED, with the state Hermite-interpolated to **exactly** `r = r_esc` before the asymptotic direction is extracted (the sky is sampled at a well-defined radius, and the f32/f64 implementations compare at the same radius — otherwise the differing overshoot radii alone contribute ~`4/r_esc` of spurious deviation); step budget exhausted → flagged and counted (VALIDATION.md V-O3).
 
 **Monitors:** per-step drift in `E`, `L_z`, `Q` and `|H|`; a step exceeding the monitor threshold is rejected and halved.
 

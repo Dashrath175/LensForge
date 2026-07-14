@@ -16,6 +16,18 @@ export function horizonRadius(a: number): number {
   return 1 + Math.sqrt(1 - a * a);
 }
 
+/**
+ * Δ = r² − 2r + a² evaluated in the factored form (r − r₊)(r − r₋).
+ * Mathematically identical, but exactly conditioned near the horizon where
+ * the polynomial form suffers catastrophic cancellation — this matters for
+ * the float32 WGSL port, and the oracle uses the same form so the ports stay
+ * literal translations (MASTER_PLAN.md §7).
+ */
+function deltaFactored(a: number, r: number): number {
+  const root = Math.sqrt(1 - a * a);
+  return (r - 1 - root) * (r - 1 + root);
+}
+
 /** Ergosphere boundary r_E(θ) = 1 + √(1 − a²cos²θ). */
 export function ergosphereRadius(a: number, theta: number): number {
   const c = Math.cos(theta);
@@ -75,7 +87,7 @@ export function evalMetric(a: number, r: number, theta: number, out: MetricBL): 
   const a2 = a * a;
 
   const Sigma = r2 + a2 * c * c;
-  const Delta = r2 - 2 * r + a2;
+  const Delta = deltaFactored(a, r);
   const A = (r2 + a2) * (r2 + a2) - a2 * Delta * s2;
 
   out.g_tt = -1 + (2 * r) / Sigma;
@@ -107,7 +119,7 @@ export function evalInverseMetricGradients(
   const a2 = a * a;
 
   const Sigma = r2 + a2 * c * c;
-  const Delta = r2 - 2 * r + a2;
+  const Delta = deltaFactored(a, r);
   const A = (r2 + a2) * (r2 + a2) - a2 * Delta * s2;
 
   const Sigma_r = 2 * r;

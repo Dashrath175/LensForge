@@ -27,10 +27,10 @@ Harness: `src/validation`. Identical initial conditions integrated in WGSL f32 a
 
 | ID | Test | Metric | Bound (Quality: High / Medium / Low) |
 |---|---|---|---|
-| V-O1 | Escape-direction deviation | Angular error of asymptotic sky direction, swept over `b` incl. `b − b_c` down to `10⁻³` | `< 1 / 3 / 10` arcmin at `b − b_c ≥ 10⁻²`; near-critical rays reported, not bounded |
+| V-O1 | Escape-direction deviation | Angular error of asymptotic sky direction (both implementations interpolated to exactly `r = r_esc`, PHYSICS.md §10), swept over `b` incl. `b − b_c` down to `10⁻³`. Angle computed via the chord `2·asin(|d̂−ô|/2)` after f64 renormalization — `acos(dot)` is unusable: the f32-normalized GPU vector's ~1e−7 norm error alone inflates it to ≈1.5 arcmin near zero separation | `< 1 / 3 / 10` arcmin at `b − b_c ≥ 10⁻²`; near-critical rays reported, not bounded |
 | V-O2 | Disk-hit deviation | Error in `(r, φ)` of intersection and in `g` | `Δr < 1e−3`, `Δg/g < 1e−3` (High tier) |
 | V-O3 | Step-budget exhaustion | Fraction of rays flagged MAX_STEPS per frame | `< 0.1 %` of pixels, all presets |
-| V-O4 | f32 conservation drift | Distribution of `E, L_z, Q, H` drift across ray population | p99 `< 1e−4`; distribution regression-tracked |
+| V-O4 | f32 conservation drift | Drift of `Q` and normalized `H` across the ray population, evaluated in f64 from the f32-quantized initial state to the returned final state (`E`, `L_z` are exact by construction) | p99 `< 1e−4`; distribution regression-tracked. The `H` bound applies to ESCAPED rays; CAPTURED-ray endpoints are conditioning-limited (≈ ε_f32/Δ ~ 1e−4 at the capture radius, cf. V-A2 note) and are reported separately |
 
 Run on every merge touching `src/physics`, `src/shaders`, or integrator parameters; full sweep on release. **Every performance change re-runs V-O** (IMPLEMENTATION.md M6).
 
