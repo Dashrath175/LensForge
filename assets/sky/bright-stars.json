@@ -1,0 +1,24 @@
+{
+  "format": "f32 records [dirx,diry,dirz,fluxR,fluxG,fluxB,0,0] × starCount, then u32 cellStart × (gridNth*gridNph+1)",
+  "starCount": 8299,
+  "gridNth": 32,
+  "gridNph": 64,
+  "fluxUnits": "stored-radiance · sr (stored radiance normalized to sphere-mean channel radiance = 1)",
+  "vmagMax": 6.5,
+  "faceSize": 512,
+  "aggFaceSize": 64,
+  "mapping": {
+    "uSign": -1,
+    "uOff": 0.5,
+    "vSign": -1
+  },
+  "sources": {
+    "panorama": "NASA/GSFC Scientific Visualization Studio, Deep Star Maps 2020 (SVS 4851), starmap_2020_4k.exr, public domain",
+    "catalog": "Yale Bright Star Catalogue, 5th revised ed. (Hoffleit & Warren 1991), Harvard-Smithsonian TDC bsc5.dat"
+  },
+  "sha256": {
+    "sky-cubemap.ktx2": "5025f9821982ec03c3a0bb3e61427201036635ea2be1879641fb2dccdf5ba037",
+    "star-agg.ktx2": "0c32b1c6d9ba61b8dcf37c0aac37e8d2f9bcf4cfd154cd9162996b95984a5ff8",
+    "bright-stars.bin": "33b51267ec21e193c93f5a2c964598f411386ded401405107a8ef80e95ba1588"
+  }
+}

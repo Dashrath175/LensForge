@@ -1,0 +1,104 @@
+/**
+ * LensForge control-panel theme (presentation only): Tweakpane v4 skinned to
+ * the app's glass design language. The glass surface itself lives on #panel
+ * (index.html); here the pane is made transparent, given breathing room
+ * between sections, and its controls get the shared radii/transitions.
+ * No selector in this file affects the canvas, HUD, or renderer.
+ */
+
+#panel .tp-rotv {
+  /* Tweakpane v4 theming variables. */
+  --tp-base-background-color: transparent;
+  --tp-base-shadow-color: rgba(0, 0, 0, 0);
+  --tp-button-background-color: rgba(255, 255, 255, 0.07);
+  --tp-button-background-color-active: rgba(255, 255, 255, 0.18);
+  --tp-button-background-color-focus: rgba(255, 255, 255, 0.14);
+  --tp-button-background-color-hover: rgba(255, 255, 255, 0.12);
+  --tp-button-foreground-color: #dfe6ec;
+  --tp-container-background-color: rgba(255, 255, 255, 0.045);
+  --tp-container-background-color-active: rgba(255, 255, 255, 0.1);
+  --tp-container-background-color-focus: rgba(255, 255, 255, 0.08);
+  --tp-container-background-color-hover: rgba(255, 255, 255, 0.07);
+  --tp-container-foreground-color: #c9d2da;
+  --tp-groove-foreground-color: rgba(255, 255, 255, 0.16);
+  --tp-input-background-color: rgba(0, 0, 0, 0.3);
+  --tp-input-background-color-active: rgba(0, 0, 0, 0.46);
+  --tp-input-background-color-focus: rgba(0, 0, 0, 0.42);
+  --tp-input-background-color-hover: rgba(0, 0, 0, 0.38);
+  --tp-input-foreground-color: #e6ecf1;
+  --tp-label-foreground-color: #8f9aa4;
+  --tp-monitor-background-color: rgba(0, 0, 0, 0.3);
+  --tp-monitor-foreground-color: #9aa4ad;
+
+  background: transparent;
+  box-shadow: none;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Root title bar ("LensForge"). */
+#panel .tp-rotv_b {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  transition: background-color 160ms ease;
+}
+
+/* Sections breathe: space between folders, air inside them. */
+#panel .tp-fldv {
+  margin: 5px 0;
+}
+#panel .tp-fldv.tp-fldv-expanded > .tp-fldv_c {
+  padding-top: 2px;
+  padding-bottom: 6px;
+}
+
+/* Folder headers. */
+#panel .tp-fldv_b {
+  border-radius: 7px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+/* Buttons. */
+#panel .tp-btnv_b {
+  border-radius: 7px;
+  font-weight: 500;
+  transition: background-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+#panel .tp-btnv_b:hover {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+/* Dropdowns. */
+#panel .tp-lstv_s {
+  border-radius: 7px;
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+/* Text/number inputs. */
+#panel .tp-txtv_i {
+  border-radius: 6px;
+  transition: background-color 160ms ease;
+}
+
+/* Slider grooves and knobs. */
+#panel .tp-sldv_t {
+  border-radius: 3px;
+  transition: background-color 160ms ease;
+}
+#panel .tp-sldv_k::before {
+  transition: background-color 160ms ease, box-shadow 160ms ease;
+}
+
+/* Checkboxes. */
+#panel .tp-ckbv_w {
+  border-radius: 5px;
+  transition: background-color 160ms ease;
+}
+
+/* Rows: a touch more vertical rhythm than the Tweakpane default. */
+#panel .tp-lblv {
+  padding-top: 1px;
+  padding-bottom: 1px;
+}

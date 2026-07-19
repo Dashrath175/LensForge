@@ -58,7 +58,25 @@ export function geodesicRhs(
   out[IT] = m.gtt * pt + m.gtph * pph;
   out[IR] = m.grr * pr;
   out[ITH] = m.gthth * pth;
-  out[IPH] = m.gtph * pt + m.gphph * pph;
+
+  // φφ channel through ℓ = p_φ/sinθ (axis-regular formulation, PHYSICS.md
+  // §10): p_φ is exactly conserved (zero RHS), so p_φ = 0 identifies rays
+  // that cross the polar axis for their entire life; their g^φφ-coupled
+  // terms vanish identically, and skipping them evaluates that exact limit
+  // instead of the indeterminate Inf·0 the bare g^φφ ~ 1/sin²θ produces on
+  // the axis. For p_φ ≠ 0 the ℓ grouping keeps every factor bounded by the
+  // physical centrifugal-barrier scale instead of forming 1/sin²θ directly.
+  let dphi = m.gtph * pt;
+  let phiTermR = 0;
+  let phiTermTh = 0;
+  if (pph !== 0) {
+    const s = Math.sin(th);
+    const lOverS = pph / s;
+    dphi += m.gphphS2 * (lOverS / s);
+    phiTermR = g.dr_gphphS2 * lOverS * lOverS;
+    phiTermTh = (g.dth_gphphS3 * lOverS * lOverS) / s;
+  }
+  out[IPH] = dphi;
 
   out[IPT] = 0;
   out[IPPH] = 0;
@@ -67,14 +85,14 @@ export function geodesicRhs(
     2 * g.dr_gtph * pt * pph +
     g.dr_grr * pr * pr +
     g.dr_gthth * pth * pth +
-    g.dr_gphph * pph * pph
+    phiTermR
   );
   out[IPTH] = -0.5 * (
     g.dth_gtt * pt * pt +
     2 * g.dth_gtph * pt * pph +
     g.dth_grr * pr * pr +
     g.dth_gthth * pth * pth +
-    g.dth_gphph * pph * pph
+    phiTermTh
   );
 }
 
@@ -94,13 +112,17 @@ export function hamiltonianResidual(a: number, y: Float64Array, scratch: RhsScra
   const crossTerm = 2 * m.gtph * pt * pph;
   const rTerm = m.grr * pr * pr;
   const thTerm = m.gthth * pth * pth;
-  const phTerm = m.gphph * pph * pph;
+  // Exactly zero for axial rays (p_φ = 0), where the bare g^φφ is infinite
+  // on the axis — same axis-regular treatment as geodesicRhs.
+  const phTerm = pph === 0 ? 0 : m.gphph * pph * pph;
   const scale =
     Math.abs(tTerm) + Math.abs(crossTerm) + Math.abs(rTerm) + Math.abs(thTerm) + Math.abs(phTerm);
   return Math.abs(tTerm + crossTerm + rTerm + thTerm + phTerm) / Math.max(scale, 1e-30);
 }
 
-/** Carter constant for photons: Q = p_θ² + cos²θ (L_z²/sin²θ − a²E²); error monitor. */
+/** Carter constant for photons: Q = p_θ² + cos²θ (L_z²/sin²θ − a²E²); error monitor.
+ * The L² term is exactly zero for axial rays (L = 0) — evaluating it as 0/sin²θ
+ * would be 0/0 = NaN on the axis itself. */
 export function carterConstant(a: number, y: Float64Array): number {
   const th = y[ITH]!;
   const s = Math.sin(th);
@@ -108,5 +130,6 @@ export function carterConstant(a: number, y: Float64Array): number {
   const E = -y[IPT]!;
   const L = y[IPPH]!;
   const pth = y[IPTH]!;
-  return pth * pth + c * c * ((L * L) / (s * s) - a * a * E * E);
+  const lTerm = L === 0 ? 0 : (L * L) / (s * s);
+  return pth * pth + c * c * (lTerm - a * a * E * E);
 }

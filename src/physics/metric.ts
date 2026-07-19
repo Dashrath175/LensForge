@@ -47,6 +47,10 @@ export interface MetricBL {
   grr: number;
   gthth: number;
   gphph: number;
+  /** g^φφ·sin²θ = (Δ − a²sin²θ)/(ΣΔ) — axis-regular (finite on the polar axis
+   * where the bare g^φφ diverges as 1/sin²θ); the geodesic RHS reassembles the
+   * φφ channel from this via ℓ = p_φ/sinθ (PHYSICS.md §10). */
+  gphphS2: number;
 }
 
 export interface InverseMetricGradients {
@@ -55,26 +59,28 @@ export interface InverseMetricGradients {
   dr_gtph: number;
   dr_grr: number;
   dr_gthth: number;
-  dr_gphph: number;
+  /** ∂_r(g^φφ)·sin²θ — axis-regular reduced form (see MetricBL.gphphS2) */
+  dr_gphphS2: number;
   /** ∂/∂θ of the contravariant components */
   dth_gtt: number;
   dth_gtph: number;
   dth_grr: number;
   dth_gthth: number;
-  dth_gphph: number;
+  /** ∂_θ(g^φφ)·sin³θ — axis-regular reduced form (see MetricBL.gphphS2) */
+  dth_gphphS3: number;
 }
 
 export function createMetric(): MetricBL {
   return {
     g_tt: 0, g_tph: 0, g_rr: 0, g_thth: 0, g_phph: 0,
-    gtt: 0, gtph: 0, grr: 0, gthth: 0, gphph: 0,
+    gtt: 0, gtph: 0, grr: 0, gthth: 0, gphph: 0, gphphS2: 0,
   };
 }
 
 export function createGradients(): InverseMetricGradients {
   return {
-    dr_gtt: 0, dr_gtph: 0, dr_grr: 0, dr_gthth: 0, dr_gphph: 0,
-    dth_gtt: 0, dth_gtph: 0, dth_grr: 0, dth_gthth: 0, dth_gphph: 0,
+    dr_gtt: 0, dr_gtph: 0, dr_grr: 0, dr_gthth: 0, dr_gphphS2: 0,
+    dth_gtt: 0, dth_gtph: 0, dth_grr: 0, dth_gthth: 0, dth_gphphS3: 0,
   };
 }
 
@@ -102,6 +108,7 @@ export function evalMetric(a: number, r: number, theta: number, out: MetricBL): 
   out.grr = Delta / Sigma;
   out.gthth = 1 / Sigma;
   out.gphph = (Delta - a2 * s2) / (SigmaDelta * s2);
+  out.gphphS2 = (Delta - a2 * s2) / SigmaDelta;
   return out;
 }
 
@@ -149,16 +156,19 @@ export function evalInverseMetricGradients(
   out.dr_gthth = -Sigma_r / (Sigma * Sigma);
   out.dth_gthth = -Sigma_th / (Sigma * Sigma);
 
-  // g^φφ = (Δ − a²sin²θ)/(ΣΔ sin²θ)
+  // g^φφ = N/(ΣΔ sin²θ) with N = Δ − a²sin²θ. Its bare gradients diverge as
+  // 1/sin²θ (∂_r) and 1/sin³θ (∂_θ) on the polar axis, and forming them
+  // directly squares ΣΔ·sin²θ — an intermediate that underflows f32 near the
+  // axis. The sin powers factor out of the quotient rule exactly, so the
+  // reduced forms below are axis-regular; the RHS reassembles the physical
+  // terms with ℓ = p_φ/sinθ (PHYSICS.md §10).
   const N = Delta - a2 * s2;
-  const D = SD * s2;
-  const D2 = D * D;
   const N_r = Delta_r;
-  const D_r = SD_r * s2;
   const N_th = -2 * a2 * s * c;
-  const D_th = Sigma_th * Delta * s2 + SD * 2 * s * c;
-  out.dr_gphph = (N_r * D - N * D_r) / D2;
-  out.dth_gphph = (N_th * D - N * D_th) / D2;
+  // ∂_r(g^φφ)·sin²θ = (N_r·ΣΔ − N·(ΣΔ)_r)/(ΣΔ)²
+  out.dr_gphphS2 = (N_r * SD - N * SD_r) / SD2;
+  // ∂_θ(g^φφ)·sin³θ = sinθ·(N_th·ΣΔ − N·(ΣΔ)_θ)/(ΣΔ)² − 2cosθ·N/(ΣΔ)
+  out.dth_gphphS3 = (s * (N_th * SD - N * SD_th)) / SD2 - (2 * c * N) / SD;
 
   return out;
 }

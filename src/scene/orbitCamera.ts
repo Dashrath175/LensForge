@@ -1,45 +1,43 @@
 /**
- * Minimal BH-centered orbit camera for M2 (expanded into the full observer
- * system in M5): drag orbits the viewpoint over the (θ, φ) sphere at radius r,
- * wheel dollies r. The view axis always points at the hole — orientation is
- * carried entirely by the observer tetrad (PHYSICS.md §5).
+ * Camera controller (M5): pointer/wheel input → ParameterStore, nothing else
+ * (ARCHITECTURE.md §1 — the store is the single source of truth; the app
+ * subscribes and drives the renderer).
+ *
+ * Two drag modes (Parameters.camera.mode):
+ *   orbit — drag moves the viewpoint over the (θ, φ) sphere; the view axis
+ *           points at the hole. Wheel dollies r.
+ *   look  — drag rotates the local view triad (yaw/pitch) from a fixed
+ *           position; orientation is carried by a CPU-side spatial rotation
+ *           of the observer tetrad (PHYSICS.md §5), so aberration and all
+ *           physics are untouched. Wheel still dollies r.
  */
+import type { CameraState } from '../core/parameters';
+import type { ParameterStore } from '../sim/parameterStore';
 import type { CameraPose } from '../renderer/tracePass';
 
 const DRAG_RADIANS_PER_PIXEL = 0.004;
 const WHEEL_DOLLY_RATE = 0.0012;
-const THETA_LIMIT = 0.15; // keep clear of the BL polar axis until M3's axis handling
-const R_MIN = 4;
-const R_MAX = 5000;
-
-export const DEFAULT_POSE: CameraPose = {
-  r: 50,
-  theta: Math.PI / 2,
-  phi: 0,
-  fovY: 0.6,
-};
 
 export class OrbitCamera {
-  readonly pose: CameraPose = { ...DEFAULT_POSE };
-  private readonly onChange: () => void;
+  private readonly store: ParameterStore;
   private dragging = false;
   private lastX = 0;
   private lastY = 0;
 
-  constructor(onChange: () => void) {
-    this.onChange = onChange;
+  constructor(store: ParameterStore) {
+    this.store = store;
   }
 
-  set(partial: Partial<CameraPose>): void {
-    Object.assign(this.pose, partial);
-    this.clamp();
-    this.onChange();
+  /** Current pose in renderer terms (the store owns the state). */
+  get pose(): CameraPose {
+    const c = this.store.get().camera;
+    return { r: c.r, theta: c.theta, phi: c.phi, fovY: c.fovY, yaw: c.yaw, pitch: c.pitch };
   }
 
-  private clamp(): void {
-    this.pose.theta = Math.min(Math.max(this.pose.theta, THETA_LIMIT), Math.PI - THETA_LIMIT);
-    this.pose.r = Math.min(Math.max(this.pose.r, R_MIN), R_MAX);
-    this.pose.fovY = Math.min(Math.max(this.pose.fovY, 0.02), 2.0);
+  /** Merge a partial camera state (validation framings, presets, dev hooks).
+   * Framings that omit yaw/pitch reset them — a framing is a full pose. */
+  set(partial: Partial<CameraState>): void {
+    this.store.update({ camera: { yaw: 0, pitch: 0, ...partial } });
   }
 
   attach(canvas: HTMLCanvasElement): void {
@@ -51,12 +49,20 @@ export class OrbitCamera {
     });
     canvas.addEventListener('pointermove', (e) => {
       if (!this.dragging) return;
-      this.pose.phi -= (e.clientX - this.lastX) * DRAG_RADIANS_PER_PIXEL;
-      this.pose.theta -= (e.clientY - this.lastY) * DRAG_RADIANS_PER_PIXEL;
+      const dx = (e.clientX - this.lastX) * DRAG_RADIANS_PER_PIXEL;
+      const dy = (e.clientY - this.lastY) * DRAG_RADIANS_PER_PIXEL;
       this.lastX = e.clientX;
       this.lastY = e.clientY;
-      this.clamp();
-      this.onChange();
+      const c = this.store.get().camera;
+      // Horizontal deltas are negated relative to M5: the M7 present pass
+      // mirrors the displayed image in screen x (arriving-photon parity,
+      // shaders/post/present.wgsl), and the input mapping mirrors with it so
+      // on-screen drag behavior is unchanged.
+      if (c.mode === 'look') {
+        this.store.update({ camera: { yaw: c.yaw - dx, pitch: c.pitch + dy } });
+      } else {
+        this.store.update({ camera: { phi: c.phi + dx, theta: c.theta - dy } });
+      }
     });
     canvas.addEventListener('pointerup', () => {
       this.dragging = false;
@@ -65,9 +71,8 @@ export class OrbitCamera {
       'wheel',
       (e) => {
         e.preventDefault();
-        this.pose.r *= Math.exp(e.deltaY * WHEEL_DOLLY_RATE);
-        this.clamp();
-        this.onChange();
+        const c = this.store.get().camera;
+        this.store.update({ camera: { r: c.r * Math.exp(e.deltaY * WHEEL_DOLLY_RATE) } });
       },
       { passive: false },
     );

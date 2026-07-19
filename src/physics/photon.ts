@@ -41,6 +41,33 @@ export function photonFromTetrad(
 }
 
 /**
+ * Photon with p_φ = 0 at (r, θ): E = 1, given p_θ; p_r solved from H = 0.
+ * Its motion has no centrifugal φ-barrier, so it crosses the polar axis —
+ * the validation constructor for the axis-handling tests (PHYSICS.md §10).
+ */
+export function polarPhoton(
+  a: number,
+  r: number,
+  theta: number,
+  pTheta: number,
+  ingoing: boolean,
+): Float64Array {
+  const m = evalMetric(a, r, theta, createMetric());
+  const pt = -1;
+  const radicand = -(m.gtt * pt * pt + m.gthth * pTheta * pTheta) / m.grr;
+  if (radicand < 0) {
+    throw new RangeError(`No polar photon with p_θ=${pTheta} at r=${r} (inside radial turning point).`);
+  }
+  const y = new Float64Array(STATE_SIZE);
+  y[IR] = r;
+  y[ITH] = theta;
+  y[IPT] = pt;
+  y[IPR] = (ingoing ? -1 : 1) * Math.sqrt(radicand);
+  y[IPTH] = pTheta;
+  return y;
+}
+
+/**
  * Equatorial photon at radius r with E = 1, L_z = b (exact impact parameter),
  * p_θ = 0; p_r solved from H = 0. `ingoing` selects the p_r sign.
  */

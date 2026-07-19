@@ -11,13 +11,16 @@ const P_H: u32 = 8u;       // current step size (0 = uninitialized sentinel)
 const P_ERR_OLD: u32 = 9u; // previous error norm (PI controller memory)
 const P_STEPS: u32 = 10u;  // accepted-step count
 const STATE_PLANES: u32 = 11u;
-const RESULT_PLANES: u32 = 3u; // escape direction xyz
+// Per-status result payload: ESCAPED -> asymptotic direction xyz;
+// HIT_DISK -> (r_hit, phi_hit, g). Never both for one ray.
+const RESULT_PLANES: u32 = 3u;
 
 // Status codes (mirrored in tracePass.ts).
 const STATUS_MARCHING: u32 = 0u;
 const STATUS_CAPTURED: u32 = 1u;
 const STATUS_ESCAPED: u32 = 2u;
 const STATUS_MAX_STEPS: u32 = 3u;
+const STATUS_HIT_DISK: u32 = 4u;
 
 // State component indices (PHYSICS.md §4).
 const IT = 0;

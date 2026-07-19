@@ -3,3 +3,4 @@ dist/
 *.local
 .vercel/
 .DS_Store
+assets/sky-src/

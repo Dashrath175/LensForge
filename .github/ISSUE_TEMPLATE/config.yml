@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question / discussion
+    url: https://github.com/OWNER/lensforge/discussions
+    about: Ask questions, share renders, or discuss physics and architecture.

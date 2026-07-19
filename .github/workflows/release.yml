@@ -1,0 +1,33 @@
+# Release pipeline (IMPLEMENTATION.md M8): a version tag runs the full
+# headless gate (typecheck, V-A suite, build) and deploys dist/ to Vercel
+# production. The GPU-dependent release gate (V-O sweep, V-I1–V-I5, V-P on
+# reference hardware) is a documented manual step BEFORE tagging
+# (VALIDATION.md §5) — GitHub-hosted runners have no real GPU.
+#
+# Required repository secrets (Vercel project must be linked first):
+#   VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  verify-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Deploy to Vercel production
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: npx vercel deploy dist --prod --yes --token "$VERCEL_TOKEN"

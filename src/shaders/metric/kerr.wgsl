@@ -9,6 +9,10 @@ struct InvMetric {
   grr: f32,
   gthth: f32,
   gphph: f32,
+  // g^phiphi * sin^2(theta) — axis-regular (finite on the polar axis where the
+  // bare g^phiphi diverges as 1/sin^2); the RHS reassembles the phi-phi channel
+  // from this via l = p_phi/sin(theta) (PHYSICS.md §10).
+  gphphS2: f32,
 }
 
 struct InvMetricGradients {
@@ -16,12 +20,14 @@ struct InvMetricGradients {
   dr_gtph: f32,
   dr_grr: f32,
   dr_gthth: f32,
-  dr_gphph: f32,
+  // d_r(g^phiphi) * sin^2(theta) — axis-regular reduced form
+  dr_gphphS2: f32,
   dth_gtt: f32,
   dth_gtph: f32,
   dth_grr: f32,
   dth_gthth: f32,
-  dth_gphph: f32,
+  // d_theta(g^phiphi) * sin^3(theta) — axis-regular reduced form
+  dth_gphphS3: f32,
 }
 
 fn deltaFactored(a: f32, r: f32) -> f32 {
@@ -47,6 +53,7 @@ fn evalInverseMetric(a: f32, r: f32, theta: f32) -> InvMetric {
   m.grr = Delta / Sigma;
   m.gthth = 1.0 / Sigma;
   m.gphph = (Delta - a2 * s2) / (SigmaDelta * s2);
+  m.gphphS2 = (Delta - a2 * s2) / SigmaDelta;
   return m;
 }
 
@@ -85,15 +92,15 @@ fn evalInverseMetricGradients(a: f32, r: f32, theta: f32) -> InvMetricGradients 
   g.dr_gthth = -Sigma_r / (Sigma * Sigma);
   g.dth_gthth = -Sigma_th / (Sigma * Sigma);
 
+  // Axis-regular reduced phi-phi gradients — literal port of the derivation in
+  // src/physics/metric.ts: the sin powers factor out of the quotient rule
+  // exactly, so no intermediate squares SigmaDelta*sin^2 (f32 underflow hazard
+  // near the axis).
   let N = Delta - a2 * s2;
-  let D = SD * s2;
-  let D2 = D * D;
   let N_r = Delta_r;
-  let D_r = SD_r * s2;
   let N_th = -2.0 * a2 * s * c;
-  let D_th = Sigma_th * Delta * s2 + SD * 2.0 * s * c;
-  g.dr_gphph = (N_r * D - N * D_r) / D2;
-  g.dth_gphph = (N_th * D - N * D_th) / D2;
+  g.dr_gphphS2 = (N_r * SD - N * SD_r) / SD2;
+  g.dth_gphphS3 = (s * (N_th * SD - N * SD_th)) / SD2 - (2.0 * c * N) / SD;
 
   return g;
 }

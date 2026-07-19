@@ -1,0 +1,32 @@
+name: Feature request
+description: Propose an improvement or extension.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Scope is governed by [MASTER_PLAN.md](../blob/main/MASTER_PLAN.md) —
+        §4 lists deliberate non-goals (GRMHD, polarization, mobile-first,
+        WebGL2 fallback, game-engine features). Proposals that fit the
+        designed extension seams in
+        [ARCHITECTURE.md §9](../blob/main/ARCHITECTURE.md) (df64 offline mode,
+        free-fall cameras, spectral rendering, volumetric disk import, jets)
+        have the smoothest path.
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you'd like
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it improves the project
+      description: Scientific value, usability, performance — and how it squares with MASTER_PLAN.md.
+    validations:
+      required: true
+  - type: textarea
+    id: sketch
+    attributes:
+      label: Implementation sketch (optional)
+      description: Which module boundary it lives behind, what it would cost.

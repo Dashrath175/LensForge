@@ -12,6 +12,8 @@ import {
   geodesicRhs,
   hamiltonianResidual,
   IPH,
+  IPPH,
+  IPTH,
   IR,
   ITH,
   STATE_SIZE,
@@ -88,6 +90,11 @@ const PI_ALPHA = 0.7 / 5;
 const PI_BETA = 0.4 / 5;
 /** Max |Δθ| per step while inside the disk's radial band, so plane crossings cannot be skipped. */
 const THETA_STEP_CAP = 0.15;
+const HALF_PI = Math.PI / 2;
+/** Plane-launch quantization band, radians (see integrateGeodesic; f32 twin
+ * in src/shaders/trace/init.wgsl). Must exceed the f32 ULP of π/2 (~1.2e-7)
+ * with margin, and stay orders below the V-O angular tolerances. */
+export const PLANE_LAUNCH_EPS = 1e-6;
 
 /** Cubic Hermite interpolation of the full state across an accepted step, σ ∈ [0, 1]. */
 function hermiteState(
@@ -176,6 +183,18 @@ export function integrateGeodesic(
   const metricScratch = createMetric();
 
   const y = Float64Array.from(y0);
+  // Plane-launch quantization (twin of PLANE_LAUNCH_EPS in
+  // src/shaders/trace/init.wgsl — change both together): a ray starting
+  // within roundoff of the equatorial plane reads cos(θ₀) at ULP scale with
+  // an arbitrary sign, so an observer placed exactly at θ = π/2 inside the
+  // disk band would self-intersect the disk at its own launch point (σ = 0).
+  // Quantize the launch θ onto the ray's departure side (dθ/dλ ∝ p_θ). The
+  // shift is ~1e-6 rad — orders below every V-O tolerance. An exactly
+  // equatorial ray (p_θ = 0) stays in-plane by symmetry and records no
+  // crossing: a measure-zero graze of the razor-thin disk.
+  if (disk && y[IPTH]! !== 0 && Math.abs(y[ITH]! - HALF_PI) < PLANE_LAUNCH_EPS) {
+    y[ITH] = HALF_PI + Math.sign(y[IPTH]!) * PLANE_LAUNCH_EPS;
+  }
   const yTrial = new Float64Array(STATE_SIZE);
   const yStage = new Float64Array(STATE_SIZE);
   const yHit = new Float64Array(STATE_SIZE);
@@ -220,12 +239,15 @@ export function integrateGeodesic(
   });
 
   // Escape direction evaluated from the momentum at the (interpolated) state.
+  // The g^φφ p_φ term is exactly zero for axial rays (p_φ = 0) — same
+  // axis-regular treatment as geodesicRhs.
   const escapedResult = (state: Float64Array): GeodesicResult => {
     const m = evalMetric(a, state[IR]!, state[ITH]!, metricScratch);
     const res = result('ESCAPED', state);
+    const dphi = state[7]! === 0 ? 0 : m.gphph * state[7]!;
     res.escapeDirection = cartesianDirection(
       a, state[IR]!, state[ITH]!, state[IPH]!,
-      m.grr * state[5]!, m.gthth * state[6]!, m.gtph * state[4]! + m.gphph * state[7]!,
+      m.grr * state[5]!, m.gthth * state[6]!, m.gtph * state[4]! + dphi,
     );
     return res;
   };
@@ -246,6 +268,26 @@ export function integrateGeodesic(
       // Never let any stage evaluate below the horizon: bound |Δr| to half
       // the remaining gap to the capture radius.
       hMax = Math.min(hMax, Math.max(0.5 * (r - rCapture), 1e-10) / drAbs);
+    }
+    // Axis-whip clamp: p_φ ≠ 0 rays turn in θ inside a 1/sinθ boundary layer
+    // of width s_min = |p_φ|/P at the poles. A step that straddles the layer
+    // can commit an O(1) momentum error that the embedded estimate cannot
+    // see (measured in f32: stray shadow pixels at 20 % beyond the critical
+    // cone from polar cameras). Bound |Δθ| to half the pole distance, floored
+    // at a quarter of the layer width so the turning resolves in a bounded
+    // number of steps. Axial rays (p_φ = 0) cross the pole smoothly — no clamp.
+    const pphClamp = y[IPPH]!;
+    if (pphClamp !== 0) {
+      const sAxis = Math.abs(Math.sin(y[ITH]!));
+      if (sAxis < 0.5) {
+        const lOverS = pphClamp / sAxis;
+        const P = Math.hypot(y[IPTH]!, lOverS);
+        const sMin = Math.abs(pphClamp) / Math.max(P, 1e-300);
+        const dthAbs = Math.abs(k1[ITH]!);
+        if (dthAbs > 0) {
+          hMax = Math.min(hMax, Math.max(0.5 * sAxis, 0.25 * sMin) / dthAbs);
+        }
+      }
     }
     if (disk && r > 0.5 * disk.rInner && r < 2 * disk.rOuter) {
       const dthAbs = Math.abs(k1[ITH]!);

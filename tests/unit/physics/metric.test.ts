@@ -81,7 +81,7 @@ describe('V-A1: metric identities', () => {
   it('analytic inverse-metric gradients match Richardson finite differences', () => {
     const m = createMetric();
     const grad = createGradients();
-    const keys = ['gtt', 'gtph', 'grr', 'gthth', 'gphph'] as const;
+    const keys = ['gtt', 'gtph', 'grr', 'gthth'] as const;
     for (const a of SPINS) {
       for (const r of [horizonRadius(a) * 1.05, 3, 10, 200]) {
         for (const th of [0.3, Math.PI / 2, 2.5]) {
@@ -94,6 +94,41 @@ describe('V-A1: metric identities', () => {
             expect(Math.abs(anR - fdR)).toBeLessThanOrEqual(1e-6 * (Math.abs(anR) + 1));
             expect(Math.abs(anTh - fdTh)).toBeLessThanOrEqual(1e-6 * (Math.abs(anTh) + 1));
           }
+          // Axis-regular reduced φφ gradients: sin-power-scaled FD of the bare g^φφ.
+          const s = Math.sin(th);
+          const fdPhR = richardsonDerivative((x) => evalMetric(a, x, th, m).gphph, r, 1e-5 * r);
+          const fdPhTh = richardsonDerivative((x) => evalMetric(a, r, x, m).gphph, th, 1e-5);
+          expect(Math.abs(grad.dr_gphphS2 - fdPhR * s * s)).toBeLessThanOrEqual(
+            1e-6 * (Math.abs(grad.dr_gphphS2) + 1),
+          );
+          expect(Math.abs(grad.dth_gphphS3 - fdPhTh * s * s * s)).toBeLessThanOrEqual(
+            1e-6 * (Math.abs(grad.dth_gphphS3) + 1),
+          );
+        }
+      }
+    }
+  });
+
+  it('axis-regular φφ quantities are finite on the polar axis and satisfy gphphS2 = g^φφ sin²θ', () => {
+    const m = createMetric();
+    const grad = createGradients();
+    for (const a of SPINS) {
+      for (const r of [horizonRadius(a) * 1.001, 3, 100]) {
+        // Exactly on the axis (bare g^φφ is infinite there by construction).
+        for (const th of [0, Math.PI, 1e-8, Math.PI - 1e-8]) {
+          evalMetric(a, r, th, m);
+          evalInverseMetricGradients(a, r, th, grad);
+          expect(Number.isFinite(m.gphphS2)).toBe(true);
+          expect(Number.isFinite(grad.dr_gphphS2)).toBe(true);
+          expect(Number.isFinite(grad.dth_gphphS3)).toBe(true);
+        }
+        // Consistency with the bare component away from the axis.
+        for (const th of [1e-3, 0.7, Math.PI / 2, 2.9]) {
+          evalMetric(a, r, th, m);
+          const s = Math.sin(th);
+          expect(Math.abs(m.gphphS2 - m.gphph * s * s)).toBeLessThanOrEqual(
+            1e-13 * Math.abs(m.gphphS2),
+          );
         }
       }
     }

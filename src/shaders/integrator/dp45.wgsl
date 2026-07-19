@@ -56,22 +56,38 @@ fn geodesicRhs(a: f32, y: array<f32, 8>) -> array<f32, 8> {
   f[IT] = m.gtt * pt + m.gtph * pph;
   f[IR] = m.grr * pr;
   f[ITH] = m.gthth * pth;
-  f[IPH] = m.gtph * pt + m.gphph * pph;
   f[IPT] = 0.0;
   f[IPPH] = 0.0;
+
+  // phi-phi channel through l = p_phi/sin(theta) — literal port of the
+  // axis-regular formulation in src/physics/hamiltonian.ts: p_phi = 0 rays
+  // cross the polar axis, where their g^phiphi-coupled terms vanish
+  // identically (skipping evaluates the exact limit instead of Inf*0 = NaN).
+  var dphi = m.gtph * pt;
+  var phiTermR = 0.0;
+  var phiTermTh = 0.0;
+  if (pph != 0.0) {
+    let s = sin(th);
+    let lOverS = pph / s;
+    dphi += m.gphphS2 * (lOverS / s);
+    phiTermR = g.dr_gphphS2 * lOverS * lOverS;
+    phiTermTh = (g.dth_gphphS3 * lOverS * lOverS) / s;
+  }
+  f[IPH] = dphi;
+
   f[IPR] = -0.5 * (
     g.dr_gtt * pt * pt +
     2.0 * g.dr_gtph * pt * pph +
     g.dr_grr * pr * pr +
     g.dr_gthth * pth * pth +
-    g.dr_gphph * pph * pph
+    phiTermR
   );
   f[IPTH] = -0.5 * (
     g.dth_gtt * pt * pt +
     2.0 * g.dth_gtph * pt * pph +
     g.dth_grr * pr * pr +
     g.dth_gthth * pth * pth +
-    g.dth_gphph * pph * pph
+    phiTermTh
   );
   return f;
 }
@@ -116,6 +132,26 @@ fn hermiteState(
     out[i] = h00 * y0[i] + h10 * h * f0[i] + h01 * y1[i] + h11 * h * f1[i];
   }
   return out;
+}
+
+// Hermite interpolation of the theta component only — port of
+// hermiteComponent(…, ITH) in src/physics/integrator.ts (used by the disk
+// plane-crossing bisection, where interpolating the full state per iteration
+// would be wasted work).
+fn hermiteTheta(
+  y0: array<f32, 8>,
+  f0: array<f32, 8>,
+  y1: array<f32, 8>,
+  f1: array<f32, 8>,
+  h: f32,
+  sigma: f32,
+) -> f32 {
+  let s2 = sigma * sigma;
+  let s3 = s2 * sigma;
+  return (2.0 * s3 - 3.0 * s2 + 1.0) * y0[ITH]
+    + (s3 - 2.0 * s2 + sigma) * h * f0[ITH]
+    + (-2.0 * s3 + 3.0 * s2) * y1[ITH]
+    + (s3 - s2) * h * f1[ITH];
 }
 
 // One DP45 stage evaluation sweep at step size h from (y, k1).

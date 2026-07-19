@@ -51,9 +51,9 @@ lensforge/
 ├─ tools/            (offline precompute scripts)
 ├─ tests/
 │  ├─ unit/          (Vitest, runs src/physics in CI)
-│  └─ golden/        (Playwright image regression)
-├─ docs/             (generated comparison figures only — prose lives in root .md files)
-└─ .github/workflows/ci.yml
+│  └─ golden/        (committed V-I5 golden PNGs + baselines.json)
+├─ docs/             (release validation record: figures + raw results + README media — prose lives in root .md files)
+└─ .github/          (CI + release workflows, issue/PR templates)
 ```
 
 ## 4. Rendering Pipeline
@@ -67,7 +67,8 @@ Pass B  GEODESIC MARCH          ≤ K RK45 steps per dispatch per ray; loops unt
 Pass C  SHADE (compute)         ESCAPED   → sky cubemap + analytic star splats × |det J|⁻¹
                                 HIT_DISK  → Planck(T_eff(r)) × g³ → CIE XYZ → linear sRGB
                                 CAPTURED  → 0
-                                accumulates into HDR target (rgba16f; rgba32f for export)
+                                accumulates into a float32 mean (temporal AA) mirrored to
+                                the rgba16f HDR target (presented + 8-bit PNG export source)
 Pass D  POST (compute/render)   temporal accumulation → optional physical bloom (off by
                                 default) → exposure → AgX tone map → present / PNG export
 ```
@@ -76,6 +77,13 @@ Pass D  POST (compute/render)   temporal accumulation → optional physical bloo
 
 - **Persistent ray state** in storage buffers, SoA. Rays are a checkpointable process, never "one dispatch = one frame" (D6).
 - **Chunk scheduler** (renderer): dispatches Pass B with a per-dispatch step budget `K` sized by measured pass timings; requeues while any ray is MARCHING. The same scheduler drives interactive frames, progressive refinement, and tiled 8K export — one code path.
+- **Interaction presentation contract (M5, extended M6):** the presented image is complete for the current pose every frame. A *preview ladder* of the same A–B–C trace runs at descending scales (¼ then ½ resolution; same shaders/physics/uniform words, per-level SoA state and marching counters), coarsest first; each level's Pass C presents the next-coarser level's radiance for its own still-MARCHING pixels (bilinear, exactly aligned — every grid samples the same tan-space frustum), and the full-resolution shade presents the finest level. The full-resolution march ladder also runs on interaction frames, so rays that terminate in-frame present at full resolution immediately — during motion most of the frame is pixel-exact and only the slow geodesic tail falls back down the ladder. No stale frames, no pose mixing; converged output is bit-identical to a preview-less trace.
+- **Frame-budget governor (M6):** chunk budgets per level are the baselines × `workScale`, a feedback control on the measured total trace GPU time per frame (timestamp-query EMAs) against a fixed target. The coarsest level's completeness ladder is never scaled. On the dev GPU the mid-drag frame measures pixel-identical to the converged frame at `a ≤ 0.9`; the governor floor keeps `a = 0.998` within ~2 % of pixels at ladder resolution during motion.
+- **Temporal accumulation on rest (M6):** after the base trace converges (sample 0 — exact pixel centers, the image all V-O/V-I comparisons use), Halton-jittered refinement rounds re-trace the frame and fold converged rounds into a float32 running mean (32 samples max) — the physically correct pixel-footprint integral. Accumulation shades run exactly once per completed round (re-shading would bias the mean); any parameter change restarts at the base sample.
+- **Production sky (M7, D9):** `tools/generateSkyAssets.ts` builds the shipped set from pinned public sources (NASA SVS Deep Star Maps 2020 EXR + Yale BSC5): every bright catalog star is measured photometrically *in* the panorama, subtracted from it, and shipped as an analytic catalog — cubemap and splat fluxes share one unit system by construction, and stars too faint to measure stay baked in (energy conserved, nothing double-counted). Pass C samples the star-subtracted KTX2 cubemap by arrival direction (exact for extended sources) and splats catalog stars with `|det J|⁻¹` magnification, `J` finite-differenced from the 4-neighborhood's escape directions (PHYSICS.md §8); a CSR (θ, φ)-cell grid bounds the per-pixel star scan, and heavily demagnified pixels blend into a 64² aggregate-star cubemap (the unresolved-field limit). The displayed image is the traced image mirrored in screen x with φ-mirrored sky lookup — the exact arriving-photon parity map (PHYSICS.md §8).
+- **Tiled export (M7):** the trace uniforms carry tile words (pixel offset + full-image dimensions); `init.wgsl` computes NDC in full-image space, so a tile renders exactly the geodesics of a monolithic render (interactive rendering is tile (0, 0, w, h), bit-identical to the untiled mapping). The exporter (`src/renderer/export.ts`) renders 1024² tiles with a 1-pixel apron (interior tile borders get the same central-difference Jacobians as a full frame), converges each tile plus 8 temporal-AA rounds through the same scheduler, applies the present transform to rgba8, and assembles the PNG (to 8K). Measured: tiled output is bit-identical to the converged monolithic frame. Export mode disables the preview ladder and runs the maximum chunk ladder per frame — every dispatch stays bounded at 64 DP45 attempts, so V-P4 TDR safety is unchanged.
+- **March workgroup size** is measured at startup (`src/renderer/marchBenchmark.ts`): a standard ray batch marched at 64/128/256 threads per group, best median wins (vendor-dependent; 64≈128 > 256 on the dev GPU).
+- **Compaction decision (D8, M6 evidence):** not implemented. At `a = 0.998` the convergence tail (< 10 % rays marching) dominates wall time, but it is serial-depth-bound (few rays × tens of thousands of steps at 64 steps/chunk), not occupancy-bound — prefix-sum compaction cannot shorten the serial chain; the governor's chunk scaling is the effective mitigation.
 - **Specialization constants** for quality tier and `K`; WGSL assembled at build time by a Vite preprocessor plugin (WGSL has no `#include`).
 - **Timestamp queries** wrap every pass; feeds the in-app profiler HUD (DEVELOPMENT.md §Profiling).
 - Optional prefix-sum ray compaction, added only if profiling shows divergence-tail cost > ~20% (see §8, D8).
@@ -95,7 +103,7 @@ sim, scene ◀── app          ui ──▶ sim (only)
 shaders: no build-time deps except the preprocessor
 ```
 
-Enforced acyclic. Runtime dependency: Tweakpane. Dev dependencies: Vite, Vitest, Playwright, TypeScript.
+Enforced acyclic. Runtime dependency: Tweakpane. Dev dependencies: Vite, Vitest, TypeScript (plus offline tool libraries in `tools/`).
 
 ## 8. Design Decisions
 

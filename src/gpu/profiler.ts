@@ -110,4 +110,10 @@ export class GpuProfiler {
       .map(([name, s]) => `${name}: ${s.emaMs.toFixed(3)} ms`)
       .join('\n');
   }
+
+  /** Smoothed GPU duration of a named pass, ms — or null before first sample
+   * (or without timestamp-query). Drives the frame-budget governor. */
+  emaMs(name: string): number | null {
+    return this.slots.get(name)?.emaMs ?? null;
+  }
 }

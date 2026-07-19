@@ -1,0 +1,56 @@
+cff-version: 1.2.0
+message: >-
+  If you use LensForge, its rendered images, or its validation methodology in
+  academic work, please cite it as below.
+title: "LensForge: a physically rigorous real-time Kerr black-hole renderer for the browser"
+type: software
+authors:
+  - name: "The LensForge Authors"
+version: 1.0.0
+date-released: "2026-07-19"
+license: MIT
+keywords:
+  - black hole
+  - Kerr metric
+  - general relativity
+  - gravitational lensing
+  - relativistic ray tracing
+  - Novikov-Thorne disk
+  - WebGPU
+  - scientific visualization
+abstract: >-
+  LensForge renders a Kerr black hole by numerically integrating null
+  geodesics (Hamiltonian formulation, adaptive Dormand-Prince 4(5)) in WebGPU
+  compute shaders, with exact relativistic radiometry for a Novikov-Thorne
+  thin accretion disk and a real star catalog under computed lensing
+  magnification. A float64 CPU oracle implementing identical physics is
+  validated against closed-form general relativity on every commit, and the
+  float32 GPU implementation is validated against the oracle and against
+  published results (Bardeen shadow contour, Luminet 1979 disk geometry,
+  DNGR beaming morphology). Measured accuracy bounds ship with the release.
+references:
+  - type: article
+    title: "Image of a spherical black hole with thin accretion disk"
+    authors:
+      - family-names: Luminet
+        given-names: "J.-P."
+    journal: "Astronomy & Astrophysics"
+    volume: 75
+    year: 1979
+    start: 228
+    end: 235
+  - type: article
+    title: "Gravitational lensing by spinning black holes in astrophysics, and in the movie Interstellar"
+    authors:
+      - family-names: James
+        given-names: Oliver
+      - family-names: von Tunzelmann
+        given-names: Eugénie
+      - family-names: Franklin
+        given-names: Paul
+      - family-names: Thorne
+        given-names: "Kip S."
+    journal: "Classical and Quantum Gravity"
+    volume: 32
+    year: 2015
+    number: 065001

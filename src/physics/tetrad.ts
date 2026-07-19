@@ -6,6 +6,7 @@
  * (verified in V-A1). Relativistic aberration lives entirely in the choice
  * of u — never in separate code (MASTER_PLAN.md §5).
  */
+import type { ObserverType } from '../core/parameters';
 import { ergosphereRadius, horizonRadius, innerProduct, type MetricBL } from './metric';
 import { angularVelocity, circularFourVelocity } from './orbits';
 
@@ -36,6 +37,30 @@ export function zamoFourVelocity(m: MetricBL, a: number, r: number): FourVector 
 /** Circular-orbit observer (equatorial, prograde); PHYSICS.md §6. */
 export function circularOrbitFourVelocity(a: number, r: number): FourVector {
   return circularFourVelocity(a, r);
+}
+
+/**
+ * Observer selection (IMPLEMENTATION.md M5): ObserverType → 4-velocity.
+ * Relativistic aberration lives entirely in this choice of u — tetrad
+ * construction and ray init are shared (MASTER_PLAN.md §5). Validity is
+ * guaranteed upstream by ParameterStore coercion; these functions still
+ * throw on invalid input by contract.
+ */
+export function observerFourVelocity(
+  type: ObserverType,
+  m: MetricBL,
+  a: number,
+  r: number,
+  theta: number,
+): FourVector {
+  switch (type) {
+    case 'zamo':
+      return zamoFourVelocity(m, a, r);
+    case 'static':
+      return staticFourVelocity(m, a, r, theta);
+    case 'circular':
+      return circularOrbitFourVelocity(a, r);
+  }
 }
 
 export { angularVelocity };

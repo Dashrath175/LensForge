@@ -1,0 +1,52 @@
+name: Bug report
+description: Something is broken — a crash, a device loss, a UI or export defect.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If you believe a *rendered image is physically wrong* (not broken, but
+        incorrect physics), please use the **Physics discrepancy** template
+        instead — it asks for the right evidence.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you do, and what went wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: state
+    attributes:
+      label: Parameter state (if relevant)
+      description: >
+        Presets → "Save JSON" and paste the file here — it reproduces your
+        exact framing and parameters.
+      render: json
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and version
+      placeholder: e.g. Chrome 138
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and OS
+      description: The HUD's first line shows the detected tier; chrome://gpu shows the adapter.
+      placeholder: e.g. RTX 3060 / Windows 11
+    validations:
+      required: true
+  - type: textarea
+    id: console
+    attributes:
+      label: Console output
+      description: Any warnings or errors from the browser console (F12).
+      render: text

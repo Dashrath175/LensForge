@@ -51,5 +51,6 @@ Canonical citation keys `[R#]` used across all documentation. When adding an equ
 
 | Key | Reference | Used for |
 |---|---|---|
-| R18 | ESA/Gaia/DPAC. *Gaia DR3 all-sky star map*. https://sci.esa.int/gaia — License: CC BY-SA 3.0 IGO. | Celestial sphere HDR panorama + bright-star catalog (M7); requires in-app attribution |
-| R19 | NASA/Goddard Space Flight Center Scientific Visualization Studio. *Deep Star Maps*. https://svs.gsfc.nasa.gov/4851 — Public domain. | Alternative sky panorama (M7) |
+| R18 | ESA/Gaia/DPAC. *Gaia DR3 all-sky star map*. https://sci.esa.int/gaia — License: CC BY-SA 3.0 IGO. | Evaluated panorama candidate (M7); **not shipped** — the public-domain R19 map was selected instead |
+| R19 | NASA/Goddard Space Flight Center Scientific Visualization Studio. *Deep Star Maps 2020* (SVS 4851). https://svs.gsfc.nasa.gov/4851 — Public domain. | **Shipped** celestial-sphere panorama (M7): star-subtracted KTX2 cubemap built by `tools/generateSkyAssets.ts`; attributed in-app |
+| R23 | Hoffleit, D., Warren, W. H. Jr. (1991). *The Bright Star Catalogue*, 5th revised ed. Yale University Observatory; distributed by the Harvard-Smithsonian Telescope Data Center. http://tdc-www.harvard.edu/catalogs/bsc5.html | **Shipped** bright-star catalog (M7): stars measured photometrically in the R19 panorama, subtracted, and re-emitted as analytic splats; attributed in-app |

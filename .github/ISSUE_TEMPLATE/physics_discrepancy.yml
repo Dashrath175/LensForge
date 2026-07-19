@@ -1,0 +1,49 @@
+name: Physics discrepancy
+description: A rendered image looks physically wrong, or disagrees with published results.
+labels: [physics]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the most valuable kind of report this project can receive —
+        thank you. LensForge's claims are auditable: every phenomenon is
+        specified in [PHYSICS.md](../blob/main/PHYSICS.md) and every accuracy
+        bound in [VALIDATION.md](../blob/main/VALIDATION.md). Before filing,
+        it's worth checking the **About & accuracy** panel in-app and
+        VALIDATION.md §7 (Known Limitations) — some surprising features
+        (e.g. the approaching side displayed on the left, a razor-thin
+        edge-on disk, unresolved n ≥ 2 subrings) are correct or documented.
+  - type: textarea
+    id: observed
+    attributes:
+      label: What the image shows
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and on what basis
+      description: >
+        A paper, equation, independent calculation, or another validated
+        renderer. Citations welcome — REFERENCES.md lists the project's
+        canonical sources.
+    validations:
+      required: true
+  - type: textarea
+    id: state
+    attributes:
+      label: Exact parameter state
+      description: Presets → "Save JSON" and paste — required for a physics report; it is the reproduction.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Screenshots / measurements
+      description: Attach the rendered image. If you ran any of the __lensforge validation hooks (dev build), paste the JSON.
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU / browser
+      description: Images differ across GPUs at the least-significant-bit level (documented D12) — the adapter matters.
