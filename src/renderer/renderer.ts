@@ -69,7 +69,14 @@ export class Renderer {
     this.bloomView = this.bloomPass.configure(this.hdrView, width, height);
     this.setExposure(1.0);
     this.rebuildPresentBindGroups();
-    this.tracePass = new TracePass(gpu, this.profiler, this.hdrView, width, height, marchWorkgroupSize);
+    this.tracePass = new TracePass(
+      gpu,
+      this.profiler,
+      { texture: this.hdrTexture, view: this.hdrView },
+      width,
+      height,
+      marchWorkgroupSize,
+    );
   }
 
   private createHdrTexture(width: number, height: number): GPUTexture {
@@ -77,8 +84,13 @@ export class Renderer {
       label: 'hdr-target',
       size: { width: Math.max(1, width), height: Math.max(1, height) },
       format: HDR_FORMAT,
+      // COPY_DST: slab-split traces compose per-slab shade targets into this
+      // texture by copy (tracePass.ts createGrid — adapter-limit compliance).
       usage:
-        GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+        GPUTextureUsage.STORAGE_BINDING |
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_SRC |
+        GPUTextureUsage.COPY_DST,
     });
   }
 
@@ -183,7 +195,7 @@ export class Renderer {
     this.bloomView = this.bloomPass.configure(this.hdrView, width, height);
     this.writePresentUniforms();
     this.rebuildPresentBindGroups();
-    this.tracePass.resize(width, height, this.hdrView);
+    this.tracePass.resize(width, height, { texture: this.hdrTexture, view: this.hdrView });
   }
 
   private encodePresent(

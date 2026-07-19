@@ -218,8 +218,13 @@ fn cs_shade(@builtin(global_invocation_id) gid: vec3u) {
     default: {
       // Still MARCHING: same-pose fallback level, never black (see fallbackTex).
       // Both pixel grids sample the same tan-space frustum uniformly, so the
-      // bilinear upsample is exactly aligned.
-      let uv = (vec2f(gid.xy) + vec2f(0.5)) / vec2f(u.resolution);
+      // bilinear upsample is exactly aligned. The uv is formed in FULL-image
+      // space through the tile words so a slab grid (adapter-limit splitting,
+      // tracePass.ts createGrid) samples the full-frame fallback at its true
+      // position; an untiled grid has tile = (0, 0, resolution), and adding
+      // 0.0 / dividing by the same values is bit-identical to the untiled
+      // mapping (the init.wgsl tile-NDC argument, M7).
+      let uv = (u.tile.xy + vec2f(gid.xy) + vec2f(0.5)) / u.tile.zw;
       color = textureSampleLevel(fallbackTex, fallbackSampler, uv, 0.0).rgb;
     }
   }

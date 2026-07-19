@@ -52,8 +52,19 @@ export async function acquireGpu(
   }
 
   const hasTimestampQuery = adapter.features.has('timestamp-query');
+  // Storage capacity limits: without requiredLimits a device is created at
+  // the SPEC DEFAULTS (128 MiB binding / 256 MiB buffer) regardless of the
+  // hardware — far below a fullscreen ray state (44 B/pixel: 3840×2160 alone
+  // is 365 MB), which surfaced as production BindGroup validation failures at
+  // large viewports. Request the adapter's advertised maximums (guaranteed
+  // grantable); allocation additionally never exceeds the granted values
+  // (slab splitting, src/renderer/tracePass.ts createGrid).
   const device = await adapter.requestDevice({
     requiredFeatures: hasTimestampQuery ? ['timestamp-query'] : [],
+    requiredLimits: {
+      maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+      maxBufferSize: adapter.limits.maxBufferSize,
+    },
     label: 'lensforge-device',
   });
 

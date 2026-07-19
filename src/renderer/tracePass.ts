@@ -227,20 +227,63 @@ interface RayBuffers {
   result: GPUBuffer;
 }
 
-/** One rung of the interaction preview ladder (see PREVIEW_LEVELS). */
-interface PreviewLevel {
-  readonly config: PreviewLevelConfig;
-  readonly uniformBuffer: GPUBuffer;
-  readonly counter: GPUBuffer;
-  readonly counterStaging: GPUBuffer;
-  width: number;
-  height: number;
-  buffers: RayBuffers | null;
+/**
+ * One resident horizontal band of a trace grid (adapter-limit compliance):
+ * no storage buffer may exceed the granted maxStorageBufferBindingSize /
+ * maxBufferSize, so a grid whose per-ray buffers would (the state plane is
+ * 44 B/pixel — a fullscreen canvas overruns even 1 GiB grants at 8K) is
+ * split into slabs. Each slab is an independent tile of the same image
+ * through the M7 tile-uniform path — the mapping measured bit-identical to
+ * a monolithic render by the tiled-export consistency check. Interior slab
+ * borders carry a 1-row apron (the export-tile apron) so shade-pass
+ * star-splat Jacobians keep central differences; apron rows are traced but
+ * never composed into the target.
+ */
+interface Slab {
+  /** First interior row inside the grid image. */
+  y0: number;
+  /** Interior rows (composed into the target). */
+  rows: number;
+  /** Apron rows above the interior (0 or 1; bottom apron is implied by gridH). */
+  apronTop: number;
+  /** Slab grid height including aprons; width always equals the grid width. */
+  gridH: number;
+  buffers: RayBuffers;
+  /** Per-slab accumulation state (16 B/ray — same layout as before, banded). */
+  accum: GPUBuffer;
+  /** Per-slab uniforms: the canonical block with this slab's tile words. */
+  uniformBuffer: GPUBuffer;
+  /** Own shade target when the grid is split (composed by copy); null for a
+   * single-slab grid, which shades straight into the grid target — the
+   * pre-split code path, byte-for-byte. */
   texture: GPUTexture | null;
   view: GPUTextureView | null;
   initBindGroup: GPUBindGroup | null;
   marchBindGroup: GPUBindGroup | null;
   shadeBindGroup: GPUBindGroup | null;
+}
+
+/** A pixel grid traced as one or more slabs (screen and preview levels). */
+interface SlabGrid {
+  width: number;
+  height: number;
+  /** Σ slab rayCounts — the marching-counter start value (apron rays are
+   * duplicated across adjacent slabs and counted per slab; the counter is a
+   * countdown to zero, so duplicates only shift the intermediate readings). */
+  rayCount: number;
+  slabs: Slab[];
+}
+
+/** One rung of the interaction preview ladder (see PREVIEW_LEVELS). */
+interface PreviewLevel {
+  readonly config: PreviewLevelConfig;
+  readonly counter: GPUBuffer;
+  readonly counterStaging: GPUBuffer;
+  width: number;
+  height: number;
+  grid: SlabGrid | null;
+  texture: GPUTexture | null;
+  view: GPUTextureView | null;
   knownMarching: number;
   mapPending: boolean;
   copyEncoded: boolean;
@@ -287,7 +330,8 @@ export class TracePass {
   private readonly marchPipeline: GPUComputePipeline;
   private readonly shadePipeline: GPUComputePipeline;
 
-  private readonly uniformBuffer: GPUBuffer;
+  /** Canonical full-image uniform block (CPU side): per-slab GPU uniform
+   * buffers are derived from it by overriding only the tile/grid words. */
   private readonly uniformData = new ArrayBuffer(UNIFORM_BYTES);
   private readonly counter: GPUBuffer;
   private readonly counterStaging: GPUBuffer;
@@ -297,10 +341,10 @@ export class TracePass {
    * from an older generation (falsely zeroing knownMarching stalls the march). */
   private counterCopyEncoded = false;
 
-  private screen: RayBuffers | null = null;
-  private initBindGroup!: GPUBindGroup;
-  private marchBindGroup!: GPUBindGroup;
-  private shadeBindGroup!: GPUBindGroup;
+  private screenGrid: SlabGrid | null = null;
+  /** Dev/validation override of the per-buffer byte budget (createGrid): lets
+   * the slab path be exercised and bit-compared at ordinary resolutions. */
+  private maxStorageBytesForTest: number | null = null;
 
   // Interaction preview ladder (see PREVIEW_LEVELS), coarsest first: per
   // level a coarse ray state, its own uniform buffer (same camera words,
@@ -311,11 +355,10 @@ export class TracePass {
   /** 1×1 black texture bound as the coarsest level's fallback. */
   private readonly fallbackDummy: GPUTexture;
 
-  /** Float32 accumulation state (M6): running mean of jittered samples at
-   * full resolution. Preview shades bind it too (they always write with
-   * weight 1 while the base trace is unconverged, so their writes are
-   * overwritten by the base shade in the same frames — never blended). */
-  private accumBuffer: GPUBuffer | null = null;
+  // Float32 accumulation state (M6) lives per slab (Slab.accum): the running
+  // mean of jittered samples. Preview slabs hold their own — they always
+  // write with weight 1 while the base trace is unconverged, so their reads
+  // never contribute (mix with weight 1 ignores the accumulator).
   private refineRound = 0;
   private refineActive = false;
   private refineMarching = 0;
@@ -326,6 +369,7 @@ export class TracePass {
 
   private width = 0;
   private height = 0;
+  private hdrTexture!: GPUTexture;
   private hdrView!: GPUTextureView;
   private camera: CameraPose | null = null;
   private spin = 0;
@@ -366,7 +410,7 @@ export class TracePass {
   constructor(
     gpu: GpuContext,
     profiler: GpuProfiler,
-    hdrView: GPUTextureView,
+    hdrTarget: { texture: GPUTexture; view: GPUTextureView },
     width: number,
     height: number,
     marchWorkgroupSize: number = WORKGROUP_1D_DEFAULT,
@@ -394,11 +438,6 @@ export class TracePass {
     });
     this.shadePipeline = make(shadeWgsl, 'cs_shade', 'trace-shade');
 
-    this.uniformBuffer = device.createBuffer({
-      size: UNIFORM_BYTES,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      label: 'trace-uniforms',
-    });
     this.counter = device.createBuffer({
       size: 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
@@ -412,11 +451,6 @@ export class TracePass {
     for (const config of PREVIEW_LEVELS) {
       this.levels.push({
         config,
-        uniformBuffer: device.createBuffer({
-          size: UNIFORM_BYTES,
-          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-          label: `preview${config.scale}-uniforms`,
-        }),
         counter: device.createBuffer({
           size: 4,
           usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
@@ -429,12 +463,9 @@ export class TracePass {
         }),
         width: 0,
         height: 0,
-        buffers: null,
+        grid: null,
         texture: null,
         view: null,
-        initBindGroup: null,
-        marchBindGroup: null,
-        shadeBindGroup: null,
         knownMarching: 0,
         mapPending: false,
         copyEncoded: false,
@@ -494,7 +525,7 @@ export class TracePass {
       label: 'sky-cellstart-dummy',
     });
 
-    this.resize(width, height, hdrView);
+    this.resize(width, height, hdrTarget);
   }
 
   private createRayBuffers(rayCount: number, label: string): RayBuffers {
@@ -514,29 +545,115 @@ export class TracePass {
     b.result.destroy();
   }
 
-  resize(width: number, height: number, hdrView: GPUTextureView): void {
+  /** Per-buffer byte budget the GRANTED device limits allow (see Slab). */
+  private bufferByteBudget(): number {
+    const limits = this.gpu.device.limits;
+    return Math.min(
+      limits.maxStorageBufferBindingSize,
+      limits.maxBufferSize,
+      this.maxStorageBytesForTest ?? Number.MAX_SAFE_INTEGER,
+    );
+  }
+
+  /**
+   * Build a trace grid as the minimum number of horizontal slabs whose every
+   * storage buffer fits the granted limits (see the Slab contract above).
+   * A grid that fits in one slab reproduces the pre-split allocation and
+   * dispatch pattern byte-for-byte.
+   */
+  private createGrid(width: number, height: number, label: string): SlabGrid {
+    const { device } = this.gpu;
+    // The state plane set (44 B/ray) is the widest per-ray buffer; accum
+    // (16), result (12), and status (4) then fit automatically. The 1D march
+    // dispatch bounds rays per slab too: ceil(rays / workgroup) must not
+    // exceed maxComputeWorkgroupsPerDimension (65535 — a 3840×2160 canvas at
+    // workgroup 64 already needs 129600 groups; an invalid pass is silently
+    // skipped, which presented as a black frame and a falsely-zero marching
+    // counter at fullscreen).
+    const maxRays = Math.min(
+      Math.floor(this.bufferByteBudget() / (STATE_PLANES * 4)),
+      device.limits.maxComputeWorkgroupsPerDimension * this.marchWorkgroup,
+    );
+    const capacityRows = Math.floor(maxRays / Math.max(1, width));
+    if (capacityRows < 3) {
+      throw new Error(
+        `LensForge: adapter storage limits cannot hold three ${width}-pixel rows of ray state ` +
+          `(budget ${this.bufferByteBudget()} B) — the canvas is too wide for this GPU.`,
+      );
+    }
+    const slabCount = Math.max(1, Math.ceil(height / (capacityRows - 2)));
+    const interior = Math.ceil(height / slabCount);
+    const slabs: Slab[] = [];
+    for (let y0 = 0; y0 < height; y0 += interior) {
+      const rows = Math.min(interior, height - y0);
+      const apronTop = y0 > 0 ? 1 : 0;
+      const apronBottom = y0 + rows < height ? 1 : 0;
+      const gridH = rows + apronTop + apronBottom;
+      const rayCount = width * gridH;
+      const slabLabel = slabCount > 1 ? `${label}-y${y0}` : label;
+      const texture =
+        slabCount > 1
+          ? device.createTexture({
+              label: `${slabLabel}-target`,
+              size: { width, height: gridH },
+              format: 'rgba16float',
+              usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
+            })
+          : null;
+      slabs.push({
+        y0,
+        rows,
+        apronTop,
+        gridH,
+        buffers: this.createRayBuffers(rayCount, slabLabel),
+        accum: device.createBuffer({
+          size: rayCount * 16,
+          usage: GPUBufferUsage.STORAGE,
+          label: `${slabLabel}-accum`,
+        }),
+        uniformBuffer: device.createBuffer({
+          size: UNIFORM_BYTES,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          label: `${slabLabel}-uniforms`,
+        }),
+        texture,
+        view: texture ? texture.createView() : null,
+        initBindGroup: null,
+        marchBindGroup: null,
+        shadeBindGroup: null,
+      });
+    }
+    return { width, height, rayCount: slabs.reduce((s, x) => s + x.buffers.rayCount, 0), slabs };
+  }
+
+  private destroyGrid(grid: SlabGrid): void {
+    for (const slab of grid.slabs) {
+      this.destroyRayBuffers(slab.buffers);
+      slab.accum.destroy();
+      slab.uniformBuffer.destroy();
+      slab.texture?.destroy();
+    }
+  }
+
+  resize(width: number, height: number, hdrTarget: { texture: GPUTexture; view: GPUTextureView }): void {
     this.width = width;
     this.height = height;
-    this.hdrView = hdrView;
-    if (this.screen) this.destroyRayBuffers(this.screen);
-    this.screen = this.createRayBuffers(width * height, 'screen');
-    this.accumBuffer?.destroy();
-    this.accumBuffer = this.gpu.device.createBuffer({
-      size: width * height * 16,
-      usage: GPUBufferUsage.STORAGE,
-      label: 'accumulation',
-    });
+    this.hdrTexture = hdrTarget.texture;
+    this.hdrView = hdrTarget.view;
+    if (this.screenGrid) this.destroyGrid(this.screenGrid);
+    this.screenGrid = this.createGrid(width, height, 'screen');
     for (const level of this.levels) {
       level.width = Math.max(1, Math.ceil(width / level.config.scale));
       level.height = Math.max(1, Math.ceil(height / level.config.scale));
-      if (level.buffers) this.destroyRayBuffers(level.buffers);
-      level.buffers = this.createRayBuffers(level.width * level.height, `preview${level.config.scale}`);
+      if (level.grid) this.destroyGrid(level.grid);
+      level.grid = this.createGrid(level.width, level.height, `preview${level.config.scale}`);
       level.texture?.destroy();
       level.texture = this.gpu.device.createTexture({
         label: `preview${level.config.scale}-target`,
         size: { width: level.width, height: level.height },
         format: 'rgba16float',
-        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+        // COPY_DST: composition target when the level grid is slab-split.
+        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
       });
       level.view = level.texture.createView();
     }
@@ -546,12 +663,29 @@ export class TracePass {
     if (this.camera) this.setCamera(this.camera, this.spin, this.observer);
   }
 
+  /**
+   * Dev/validation hook: cap the per-buffer byte budget so the slab path can
+   * be exercised and bit-compared against the monolithic path at ordinary
+   * resolutions (the M7 tile-consistency methodology). null restores the
+   * granted device limits. Rebuilds the grids; restarts the accumulation.
+   */
+  setMaxStorageBytesForTest(bytes: number | null): void {
+    this.maxStorageBytesForTest = bytes;
+    this.resize(this.width, this.height, { texture: this.hdrTexture, view: this.hdrView });
+  }
+
+  /** Slab counts per grid (validation introspection). */
+  getSlabLayout(): { screen: number; levels: number[] } {
+    return {
+      screen: this.screenGrid?.slabs.length ?? 0,
+      levels: this.levels.map((l) => l.grid?.slabs.length ?? 0),
+    };
+  }
+
   /** (Re)create every bind group from the current buffers/textures. Called on
    * resize and when the sky assets arrive (setSky swaps the sky resources). */
   private buildBindGroups(): void {
     const { device } = this.gpu;
-    const hdrView = this.hdrView;
-    const uniforms = { binding: 0, resource: { buffer: this.uniformBuffer } };
     const makeInit = (u: GPUBindGroupEntry, b: RayBuffers): GPUBindGroup =>
       device.createBindGroup({
         layout: this.initPipeline.getBindGroupLayout(0),
@@ -575,6 +709,7 @@ export class TracePass {
     const makeShade = (
       u: GPUBindGroupEntry,
       b: RayBuffers,
+      accum: GPUBuffer,
       target: GPUTextureView,
       fallback: GPUTextureView,
     ): GPUBindGroup =>
@@ -590,7 +725,7 @@ export class TracePass {
           { binding: 7, resource: { buffer: this.planckBuffer } },
           { binding: 8, resource: fallback },
           { binding: 9, resource: this.fallbackSampler },
-          { binding: 10, resource: { buffer: this.accumBuffer! } },
+          { binding: 10, resource: { buffer: accum } },
           { binding: 11, resource: this.skyView },
           { binding: 12, resource: this.skySampler },
           { binding: 13, resource: this.skyAggView },
@@ -601,17 +736,22 @@ export class TracePass {
 
     // Chained fallbacks, coarsest first: level i falls back to level i-1
     // (the coarsest to the black dummy), full resolution to the finest level.
+    // Every slab of a grid shares the grid's counter and fallback; a slab of
+    // a split grid shades into its own target (composed by copy in encode).
+    const wireGrid = (grid: SlabGrid, counter: GPUBuffer, target: GPUTextureView, fallback: GPUTextureView): void => {
+      for (const slab of grid.slabs) {
+        const u = { binding: 0, resource: { buffer: slab.uniformBuffer } };
+        slab.initBindGroup = makeInit(u, slab.buffers);
+        slab.marchBindGroup = makeMarch(u, slab.buffers, counter);
+        slab.shadeBindGroup = makeShade(u, slab.buffers, slab.accum, slab.view ?? target, fallback);
+      }
+    };
     let coarserView = this.fallbackDummy.createView();
     for (const level of this.levels) {
-      const levelUniforms = { binding: 0, resource: { buffer: level.uniformBuffer } };
-      level.initBindGroup = makeInit(levelUniforms, level.buffers!);
-      level.marchBindGroup = makeMarch(levelUniforms, level.buffers!, level.counter);
-      level.shadeBindGroup = makeShade(levelUniforms, level.buffers!, level.view!, coarserView);
+      wireGrid(level.grid!, level.counter, level.view!, coarserView);
       coarserView = level.view!;
     }
-    this.initBindGroup = makeInit(uniforms, this.screen!);
-    this.marchBindGroup = makeMarch(uniforms, this.screen!, this.counter);
-    this.shadeBindGroup = makeShade(uniforms, this.screen!, hdrView, coarserView);
+    wireGrid(this.screenGrid!, this.counter, this.hdrView, coarserView);
   }
 
   /**
@@ -656,7 +796,7 @@ export class TracePass {
     this.packDiskUniforms(f32);
     f32.set([0, 0, 1, 0], 48); // base sample: no jitter, overwrite weight
     f32.set([SKY_RADIANCE_SCALE, STAR_PSF_SIGMA_PX, this.disk.inhomogeneity, this.diskTime], 52);
-    this.gpu.device.queue.writeBuffer(this.uniformBuffer, 0, this.uniformData);
+    this.writeGridUniforms(this.screenGrid!, this.uniformData);
 
     // Preview levels: identical camera/physics words (same tan-half-FOVs, so
     // every grid spans the same frustum); only the pixel-grid words differ.
@@ -664,12 +804,12 @@ export class TracePass {
       const levelData = this.uniformData.slice(0);
       new Uint32Array(levelData).set([level.width, level.height, level.width * level.height], 32);
       new Float32Array(levelData).set([0, 0, level.width, level.height], 28);
-      this.gpu.device.queue.writeBuffer(level.uniformBuffer, 0, levelData);
-      level.knownMarching = level.width * level.height;
+      this.writeGridUniforms(level.grid!, levelData);
+      level.knownMarching = level.grid!.rayCount;
     }
 
     this.needsInit = true;
-    this.knownMarching = this.width * this.height;
+    this.knownMarching = this.screenGrid!.rayCount;
     this.generation++;
     this.epoch++;
     this.refineRound = 0;
@@ -682,6 +822,28 @@ export class TracePass {
    * through setCamera, which restarts the accumulation. A mismatch here means
    * some code path mutated uniforms without restarting — stale accumulation. */
   private uniformHashAtRestart = 0;
+
+  /**
+   * Upload per-slab uniform blocks derived from a grid's canonical block:
+   * identical physics/camera/sample words everywhere; a slab overrides only
+   * its tile-window and grid-size words — each slab is a tile of the
+   * canonical image through the M7 tile path. A single-slab grid uploads the
+   * canonical block unchanged (byte-identical to the pre-split uniforms).
+   */
+  private writeGridUniforms(grid: SlabGrid, canonical: ArrayBuffer): void {
+    for (const slab of grid.slabs) {
+      let data = canonical;
+      if (grid.slabs.length > 1) {
+        data = canonical.slice(0);
+        const f32 = new Float32Array(data);
+        const u32 = new Uint32Array(data);
+        f32[29] = f32[29]! + (slab.y0 - slab.apronTop); // tile.y of this band
+        u32[33] = slab.gridH; // resolution.y
+        u32[34] = grid.width * slab.gridH; // rayCount
+      }
+      this.gpu.device.queue.writeBuffer(slab.uniformBuffer, 0, data);
+    }
+  }
 
   /**
    * Disk + LUT uniform words (f32 indices 40-47). The T̂ slice at the current
@@ -838,11 +1000,23 @@ export class TracePass {
     return this.camera ? this.knownMarching : 0;
   }
 
+  /** Compose a split grid's slab targets into the grid target (interior rows
+   * only — aprons are traced for Jacobian support, never presented). */
+  private composeGrid(encoder: GPUCommandEncoder, grid: SlabGrid, target: GPUTexture): void {
+    if (grid.slabs.length < 2) return;
+    for (const slab of grid.slabs) {
+      encoder.copyTextureToTexture(
+        { texture: slab.texture!, origin: { x: 0, y: slab.apronTop } },
+        { texture: target, origin: { x: 0, y: slab.y0 } },
+        { width: grid.width, height: slab.rows },
+      );
+    }
+  }
+
   /** Encode passes A-C for this frame. Returns false when no camera is set. */
   encode(encoder: GPUCommandEncoder): boolean {
-    if (!this.camera || !this.screen) return false;
+    if (!this.camera || !this.screenGrid) return false;
     const groupsX = Math.ceil(this.width / WORKGROUP_2D);
-    const groupsY = Math.ceil(this.height / WORKGROUP_2D);
 
     if (import.meta.env?.DEV && !this.needsInit && hashUniforms(this.uniformData) !== this.uniformHashAtRestart) {
       console.error('LensForge invariant violated: trace uniforms changed without an accumulation restart.');
@@ -860,18 +1034,22 @@ export class TracePass {
         timestampWrites: this.profiler.timestampWrites('init') as GPUComputePassTimestampWrites,
       });
       pass.setPipeline(this.initPipeline);
-      pass.setBindGroup(0, this.initBindGroup);
-      pass.dispatchWorkgroups(groupsX, groupsY);
+      for (const slab of this.screenGrid.slabs) {
+        pass.setBindGroup(0, slab.initBindGroup);
+        pass.dispatchWorkgroups(groupsX, Math.ceil(slab.gridH / WORKGROUP_2D));
+      }
       if (this.previewsEnabled) {
         for (const level of this.levels) {
-          pass.setBindGroup(0, level.initBindGroup);
-          pass.dispatchWorkgroups(Math.ceil(level.width / WORKGROUP_2D), Math.ceil(level.height / WORKGROUP_2D));
-          level.knownMarching = level.buffers!.rayCount;
+          for (const slab of level.grid!.slabs) {
+            pass.setBindGroup(0, slab.initBindGroup);
+            pass.dispatchWorkgroups(Math.ceil(level.width / WORKGROUP_2D), Math.ceil(slab.gridH / WORKGROUP_2D));
+          }
+          level.knownMarching = level.grid!.rayCount;
         }
       }
       pass.end();
       this.needsInit = false;
-      this.knownMarching = this.screen.rayCount;
+      this.knownMarching = this.screenGrid.rayCount;
     }
 
     // Preview ladder, coarsest first (each level's shade may sample the
@@ -881,8 +1059,8 @@ export class TracePass {
     // once, just before it.
     for (const level of this.previewsEnabled ? this.levels : []) {
       const active = level.knownMarching > 0;
+      const slabs = level.grid!.slabs;
       if (active) {
-        const groups = Math.ceil(level.buffers!.rayCount / this.marchWorkgroup);
         const pass = encoder.beginComputePass({
           label: `preview${level.config.scale}-march`,
           timestampWrites: this.profiler.timestampWrites(
@@ -890,7 +1068,6 @@ export class TracePass {
           ) as GPUComputePassTimestampWrites,
         });
         pass.setPipeline(this.marchPipeline);
-        pass.setBindGroup(0, level.marchBindGroup);
         const chunks = level.config.governed
           ? Math.min(
               PREVIEW_CHUNKS_MAX,
@@ -898,14 +1075,19 @@ export class TracePass {
             )
           : level.config.dispatchesPerFrame;
         for (let d = 0; d < chunks - 1; d++) {
-          pass.dispatchWorkgroups(groups);
+          for (const slab of slabs) {
+            pass.setBindGroup(0, slab.marchBindGroup);
+            pass.dispatchWorkgroups(Math.ceil(slab.buffers.rayCount / this.marchWorkgroup));
+          }
         }
         pass.end();
         encoder.clearBuffer(level.counter);
         const last = encoder.beginComputePass({ label: `preview${level.config.scale}-march-final` });
         last.setPipeline(this.marchPipeline);
-        last.setBindGroup(0, level.marchBindGroup);
-        last.dispatchWorkgroups(groups);
+        for (const slab of slabs) {
+          last.setBindGroup(0, slab.marchBindGroup);
+          last.dispatchWorkgroups(Math.ceil(slab.buffers.rayCount / this.marchWorkgroup));
+        }
         last.end();
         if (!level.mapPending) {
           encoder.copyBufferToBuffer(level.counter, 0, level.counterStaging, 0, 4);
@@ -915,9 +1097,12 @@ export class TracePass {
       if (active || didInit) {
         const pass = encoder.beginComputePass({ label: `preview${level.config.scale}-shade` });
         pass.setPipeline(this.shadePipeline);
-        pass.setBindGroup(0, level.shadeBindGroup);
-        pass.dispatchWorkgroups(Math.ceil(level.width / WORKGROUP_2D), Math.ceil(level.height / WORKGROUP_2D));
+        for (const slab of slabs) {
+          pass.setBindGroup(0, slab.shadeBindGroup);
+          pass.dispatchWorkgroups(Math.ceil(level.width / WORKGROUP_2D), Math.ceil(slab.gridH / WORKGROUP_2D));
+        }
         pass.end();
+        this.composeGrid(encoder, level.grid!, level.texture!);
       }
     }
 
@@ -931,7 +1116,7 @@ export class TracePass {
     const baseMarching = this.knownMarching > 0;
     let roundComplete = false;
     if (!baseMarching && this.refinementEnabled && !this.refineActive && this.refineRound < REFINE_MAX_ROUNDS) {
-      this.startRefineRound(encoder, groupsX, groupsY);
+      this.startRefineRound(encoder, groupsX);
     } else if (!baseMarching && this.refineActive && this.refineMarching === 0) {
       // The jittered round has converged: one accumulation shade folds it in.
       roundComplete = true;
@@ -940,7 +1125,7 @@ export class TracePass {
     }
 
     if (baseMarching || (this.refineActive && this.refineMarching > 0)) {
-      const mainGroups = Math.ceil(this.screen.rayCount / this.marchWorkgroup);
+      const slabs = this.screenGrid.slabs;
       // Export/batch mode (previews disabled): no frame budget to honor —
       // run the maximum chunk ladder per frame (each dispatch stays bounded
       // at STEPS_PER_DISPATCH attempts, so V-P4 TDR safety is unchanged).
@@ -953,9 +1138,11 @@ export class TracePass {
           timestampWrites: this.profiler.timestampWrites('march') as GPUComputePassTimestampWrites,
         });
         pass.setPipeline(this.marchPipeline);
-        pass.setBindGroup(0, this.marchBindGroup);
         for (let d = 0; d < chunks - 1; d++) {
-          pass.dispatchWorkgroups(mainGroups);
+          for (const slab of slabs) {
+            pass.setBindGroup(0, slab.marchBindGroup);
+            pass.dispatchWorkgroups(Math.ceil(slab.buffers.rayCount / this.marchWorkgroup));
+          }
         }
         pass.end();
       }
@@ -967,8 +1154,10 @@ export class TracePass {
           : this.profiler.timestampWrites('march')) as GPUComputePassTimestampWrites,
       });
       last.setPipeline(this.marchPipeline);
-      last.setBindGroup(0, this.marchBindGroup);
-      last.dispatchWorkgroups(mainGroups);
+      for (const slab of slabs) {
+        last.setBindGroup(0, slab.marchBindGroup);
+        last.dispatchWorkgroups(Math.ceil(slab.buffers.rayCount / this.marchWorkgroup));
+      }
       last.end();
       if (!this.counterMapPending) {
         encoder.copyBufferToBuffer(this.counter, 0, this.counterStaging, 0, 4);
@@ -988,9 +1177,12 @@ export class TracePass {
         timestampWrites: this.profiler.timestampWrites('shade') as GPUComputePassTimestampWrites,
       });
       pass.setPipeline(this.shadePipeline);
-      pass.setBindGroup(0, this.shadeBindGroup);
-      pass.dispatchWorkgroups(groupsX, groupsY);
+      for (const slab of this.screenGrid.slabs) {
+        pass.setBindGroup(0, slab.shadeBindGroup);
+        pass.dispatchWorkgroups(groupsX, Math.ceil(slab.gridH / WORKGROUP_2D));
+      }
       pass.end();
+      this.composeGrid(encoder, this.screenGrid, this.hdrTexture);
     }
     return true;
   }
@@ -1011,20 +1203,22 @@ export class TracePass {
   /** Begin a jittered refinement round: sanctioned uniform update (jitter +
    * accumulation weight; the dev invariant hash is refreshed) and a
    * full-resolution re-init. Physics words are untouched. */
-  private startRefineRound(encoder: GPUCommandEncoder, groupsX: number, groupsY: number): void {
+  private startRefineRound(encoder: GPUCommandEncoder, groupsX: number): void {
     const f32 = new Float32Array(this.uniformData);
     f32[48] = TracePass.halton(this.refineRound + 1, 2) - 0.5;
     f32[49] = TracePass.halton(this.refineRound + 1, 3) - 0.5;
     f32[50] = 1 / (this.refineRound + 2); // base sample + completed rounds + this one
-    this.gpu.device.queue.writeBuffer(this.uniformBuffer, 0, this.uniformData);
+    this.writeGridUniforms(this.screenGrid!, this.uniformData);
     if (import.meta.env?.DEV) this.uniformHashAtRestart = hashUniforms(this.uniformData);
 
     const pass = encoder.beginComputePass({ label: 'refine-init' });
     pass.setPipeline(this.initPipeline);
-    pass.setBindGroup(0, this.initBindGroup);
-    pass.dispatchWorkgroups(groupsX, groupsY);
+    for (const slab of this.screenGrid!.slabs) {
+      pass.setBindGroup(0, slab.initBindGroup);
+      pass.dispatchWorkgroups(groupsX, Math.ceil(slab.gridH / WORKGROUP_2D));
+    }
     pass.end();
-    this.refineMarching = this.screen!.rayCount;
+    this.refineMarching = this.screenGrid!.rayCount;
     this.refineActive = true;
     this.epoch++;
   }
@@ -1120,17 +1314,40 @@ export class TracePass {
     }
   }
 
-  /** Read back the screen status plane (validation: shadow-diameter measurement). */
+  /** Read back the screen status plane (validation: shadow-diameter
+   * measurement). Slab-split grids are assembled from the interior rows of
+   * each slab — the returned full-image plane is identical to a monolithic
+   * readback (aprons are duplicated tiles of the same rays). */
   async readScreenStatuses(): Promise<Uint32Array> {
-    if (!this.screen) throw new Error('trace pass has no screen buffers');
-    return new Uint32Array((await this.readBuffer(this.screen.status)).buffer);
+    const grid = this.screenGrid;
+    if (!grid) throw new Error('trace pass has no screen buffers');
+    const out = new Uint32Array(grid.width * grid.height);
+    for (const slab of grid.slabs) {
+      const raw = new Uint32Array((await this.readBuffer(slab.buffers.status)).buffer);
+      out.set(raw.subarray(slab.apronTop * grid.width, (slab.apronTop + slab.rows) * grid.width), slab.y0 * grid.width);
+    }
+    return out;
   }
 
   /** Read back the screen result planes (validation: star-splat Jacobian
-   * spot-check — ESCAPED rays hold their asymptotic direction here). */
+   * spot-check — ESCAPED rays hold their asymptotic direction here). Returned
+   * plane-major over the full image, assembled from slab interiors. */
   async readScreenResults(): Promise<Float32Array> {
-    if (!this.screen) throw new Error('trace pass has no screen buffers');
-    return new Float32Array((await this.readBuffer(this.screen.result)).buffer);
+    const grid = this.screenGrid;
+    if (!grid) throw new Error('trace pass has no screen buffers');
+    const pixels = grid.width * grid.height;
+    const out = new Float32Array(RESULT_PLANES * pixels);
+    for (const slab of grid.slabs) {
+      const raw = new Float32Array((await this.readBuffer(slab.buffers.result)).buffer);
+      const slabRays = slab.buffers.rayCount;
+      for (let p = 0; p < RESULT_PLANES; p++) {
+        out.set(
+          raw.subarray(p * slabRays + slab.apronTop * grid.width, p * slabRays + (slab.apronTop + slab.rows) * grid.width),
+          p * pixels + slab.y0 * grid.width,
+        );
+      }
+    }
+    return out;
   }
 
   private async readBuffer(src: GPUBuffer): Promise<Uint8Array> {
@@ -1266,15 +1483,13 @@ export class TracePass {
   }
 
   destroy(): void {
-    if (this.screen) this.destroyRayBuffers(this.screen);
+    if (this.screenGrid) this.destroyGrid(this.screenGrid);
     for (const level of this.levels) {
-      if (level.buffers) this.destroyRayBuffers(level.buffers);
+      if (level.grid) this.destroyGrid(level.grid);
       level.texture?.destroy();
-      level.uniformBuffer.destroy();
       level.counter.destroy();
       level.counterStaging.destroy();
     }
-    this.uniformBuffer.destroy();
     this.counter.destroy();
     this.counterStaging.destroy();
     this.fallbackDummy.destroy();
